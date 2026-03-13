@@ -1,0 +1,9 @@
+{
+  "name": "LocalTreasure - 特产交换",
+  "description": "一个连接全国特产爱好者的交换平台。分享你的家乡味道，探索远方的惊喜。结合AI辅助描述与地图探索功能。",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
