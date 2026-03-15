@@ -1,4 +1,4 @@
-﻿from typing import Optional, Set
+from typing import Optional, Set
 
 from django.conf import settings
 from django.db import transaction
@@ -7,7 +7,12 @@ from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
-from community.models import CommunityComment, CommunityPost, CommunityPostLike
+from community.models import (
+    CommunityAuditStatus,
+    CommunityComment,
+    CommunityPost,
+    CommunityPostLike,
+)
 from community.serializers import (
     CommunityCommentCreateSerializer,
     CommunityCommentListQuerySerializer,
@@ -15,6 +20,11 @@ from community.serializers import (
     CommunityPostCreateSerializer,
     CommunityPostListQuerySerializer,
     CommunityPostReadSerializer,
+)
+from community.tasks import (
+    audit_community_comment,
+    audit_community_post,
+    notify_post_liked,
 )
 from core.auth import get_current_user
 from core.responses import api_success
@@ -115,6 +125,34 @@ def _post_payload(
     return payload
 
 
+def _public_post_queryset():
+    return CommunityPost.objects.filter(
+        is_visible=True, audit_status=CommunityAuditStatus.APPROVED
+    )
+
+
+def _comment_node(comment: CommunityComment) -> dict:
+    return {
+        "id": comment.id,
+        "post_id": comment.post_id,
+        "content": comment.content,
+        "created_at": comment.created_at,
+        "user_id": comment.user_id,
+        "user": {
+            "id": comment.user_id,
+            "nickname": comment.user.nickname,
+            "avatar": comment.user.avatar,
+        },
+        "parent_id": comment.parent_id,
+        "root_id": comment.root_id,
+        "depth": comment.depth,
+        "audit_status": comment.audit_status,
+        "audit_reason": comment.audit_reason,
+        "children_count": 0,
+        "replies": [],
+    }
+
+
 class CommunityPostListCreateView(APIView):
     def get(self, request):
         query_serializer = CommunityPostListQuerySerializer(data=request.query_params)
@@ -124,13 +162,22 @@ class CommunityPostListCreateView(APIView):
         skip = query["skip"]
         limit = query["limit"]
         search_q = query.get("q")
+        sort = query.get("sort", "latest")
 
         queryset = (
-            CommunityPost.objects.all()
+            _public_post_queryset()
             .select_related("user", "item", "exchange", "exchange__requester", "exchange__owner")
-            .annotate(comment_count=Count("comments", distinct=True))
+            .annotate(
+                comment_count=Count(
+                    "comments",
+                    filter=Q(
+                        comments__is_visible=True,
+                        comments__audit_status=CommunityAuditStatus.APPROVED,
+                    ),
+                    distinct=True,
+                )
+            )
             .annotate(like_count=Count("likes", distinct=True))
-            .order_by("-created_at", "-id")
         )
         if search_q:
             queryset = queryset.filter(
@@ -140,6 +187,10 @@ class CommunityPostListCreateView(APIView):
                 | Q(item__city__icontains=search_q)
                 | Q(item__flavor_tags__tag_name__icontains=search_q)
             ).distinct()
+        if sort == "hot":
+            queryset = queryset.order_by("-like_count", "-comment_count", "-created_at", "-id")
+        else:
+            queryset = queryset.order_by("-created_at", "-id")
 
         rows = list(queryset[skip : skip + limit])
 
@@ -197,6 +248,7 @@ class CommunityPostListCreateView(APIView):
             content=serializer.validated_data["content"],
             images=serializer.validated_data.get("images") or [],
         )
+        audit_community_post.delay(post.id)
         post = (
             CommunityPost.objects.select_related(
                 "user", "item", "exchange", "exchange__requester", "exchange__owner"
@@ -212,18 +264,37 @@ class CommunityPostListCreateView(APIView):
                 like_count=0,
                 is_liked=False,
             ),
-            message="community post created",
+            message="community post created, awaiting audit",
             status_code=status.HTTP_201_CREATED,
         )
 
 
 class CommunityPostDetailView(APIView):
     def get(self, request, post_id: int):
+        current_user = get_current_user(request, required=False)
+        base_queryset = CommunityPost.objects.all()
+        if not current_user:
+            base_queryset = _public_post_queryset()
+        else:
+            base_queryset = base_queryset.filter(
+                Q(is_visible=True, audit_status=CommunityAuditStatus.APPROVED)
+                | Q(user_id=current_user.id, is_visible=True)
+            )
+
         post = (
-            CommunityPost.objects.select_related(
+            base_queryset.select_related(
                 "user", "item", "exchange", "exchange__requester", "exchange__owner"
             )
-            .annotate(comment_count=Count("comments", distinct=True))
+            .annotate(
+                comment_count=Count(
+                    "comments",
+                    filter=Q(
+                        comments__is_visible=True,
+                        comments__audit_status=CommunityAuditStatus.APPROVED,
+                    ),
+                    distinct=True,
+                )
+            )
             .annotate(like_count=Count("likes", distinct=True))
             .filter(id=post_id)
             .first()
@@ -231,7 +302,6 @@ class CommunityPostDetailView(APIView):
         if not post:
             raise NotFound("Community post not found")
 
-        current_user = get_current_user(request, required=False)
         can_comment = False
         is_liked = False
         if current_user:
@@ -252,10 +322,29 @@ class CommunityPostDetailView(APIView):
             )
         )
 
+    def delete(self, request, post_id: int):
+        user = get_current_user(request, required=True)
+        post = CommunityPost.objects.filter(id=post_id, user_id=user.id, is_visible=True).first()
+        if not post:
+            raise NotFound("Community post not found")
+
+        post.is_visible = False
+        post.save(update_fields=["is_visible", "updated_at"])
+        return api_success(message="community post deleted")
+
 
 class CommunityPostCommentsView(APIView):
     def get(self, request, post_id: int):
-        post = CommunityPost.objects.filter(id=post_id).only("id").first()
+        current_user = get_current_user(request, required=False)
+        post_qs = CommunityPost.objects.all()
+        if not current_user:
+            post_qs = _public_post_queryset()
+        else:
+            post_qs = post_qs.filter(
+                Q(is_visible=True, audit_status=CommunityAuditStatus.APPROVED)
+                | Q(user_id=current_user.id, is_visible=True)
+            )
+        post = post_qs.filter(id=post_id).only("id").first()
         if not post:
             raise NotFound("Community post not found")
 
@@ -263,45 +352,39 @@ class CommunityPostCommentsView(APIView):
         query_serializer.is_valid(raise_exception=True)
         root_limit = query_serializer.validated_data["root_limit"]
 
-        comments = (
-            CommunityComment.objects.filter(post_id=post_id)
+        root_comments_qs = (
+            CommunityComment.objects.filter(post_id=post_id, parent_id__isnull=True)
+            .filter(is_visible=True, audit_status=CommunityAuditStatus.APPROVED)
             .select_related("user")
             .order_by("created_at")
         )
 
-        nodes = {}
-        roots = []
-        for c in comments:
-            nodes[c.id] = {
-                "id": c.id,
-                "post_id": c.post_id,
-                "content": c.content,
-                "created_at": c.created_at,
-                "user_id": c.user_id,
-                "user": {
-                    "id": c.user_id,
-                    "nickname": c.user.nickname,
-                    "avatar": c.user.avatar,
-                },
-                "parent_id": c.parent_id,
-                "root_id": c.root_id,
-                "depth": c.depth,
-                "children_count": 0,
-                "replies": [],
-            }
+        roots = list(root_comments_qs[:root_limit])
+        root_ids = [c.id for c in roots]
 
-        for c in comments:
+        replies_qs = (
+            CommunityComment.objects.filter(post_id=post_id, root_id__in=root_ids)
+            .filter(is_visible=True, audit_status=CommunityAuditStatus.APPROVED)
+            .select_related("user")
+            .order_by("created_at")
+        )
+        replies = list(replies_qs)
+
+        nodes = {}
+        result_roots = []
+
+        for c in roots + replies:
+            nodes[c.id] = _comment_node(c)
+
+        for c in roots + replies:
             node = nodes[c.id]
             if c.parent_id and c.parent_id in nodes:
                 nodes[c.parent_id]["replies"].append(node)
                 nodes[c.parent_id]["children_count"] += 1
-            else:
-                roots.append(node)
+            elif not c.parent_id:
+                result_roots.append(node)
 
-        if len(roots) > root_limit:
-            roots = roots[-root_limit:]
-
-        return api_success(data=roots)
+        return api_success(data=result_roots)
 
     def post(self, request, post_id: int):
         user = get_current_user(request, required=True)
@@ -309,6 +392,11 @@ class CommunityPostCommentsView(APIView):
         post = CommunityPost.objects.select_related("item").filter(id=post_id).first()
         if not post:
             raise NotFound("Community post not found")
+        if (
+            not post.is_visible
+            or post.audit_status != CommunityAuditStatus.APPROVED
+        ) and post.user_id != user.id:
+            raise PermissionDenied("Community post is not available for commenting")
 
         if not _user_participated_completed_item_exchange(user.id, post.item_id):
             raise PermissionDenied(
@@ -344,28 +432,38 @@ class CommunityPostCommentsView(APIView):
                 root_id=root_id,
                 depth=depth,
             )
+        audit_community_comment.delay(comment.id)
 
         return api_success(
             data={
-                "id": comment.id,
-                "post_id": comment.post_id,
-                "content": comment.content,
-                "created_at": comment.created_at,
-                "user_id": comment.user_id,
+                **_comment_node(comment),
                 "user": {
                     "id": user.id,
                     "nickname": user.nickname,
                     "avatar": user.avatar,
                 },
-                "parent_id": comment.parent_id,
-                "root_id": comment.root_id,
-                "depth": comment.depth,
-                "children_count": 0,
-                "replies": [],
             },
-            message="community comment created",
+            message="community comment created, awaiting audit",
             status_code=status.HTTP_201_CREATED,
         )
+
+
+class CommunityCommentDeleteView(APIView):
+    def delete(self, request, post_id: int, comment_id: int):
+        user = get_current_user(request, required=True)
+        comment = (
+            CommunityComment.objects.select_related("post")
+            .filter(id=comment_id, post_id=post_id, is_visible=True)
+            .first()
+        )
+        if not comment:
+            raise NotFound("Community comment not found")
+        if comment.user_id != user.id and comment.post.user_id != user.id:
+            raise PermissionDenied("No permission to delete this comment")
+
+        comment.is_visible = False
+        comment.save(update_fields=["is_visible"])
+        return api_success(message="community comment deleted")
 
 
 class CommunityEligibleItemsView(APIView):
@@ -395,7 +493,12 @@ class CommunityEligibleItemsView(APIView):
 class CommunityPostLikeToggleView(APIView):
     def post(self, request, post_id: int):
         user = get_current_user(request, required=True)
-        post = CommunityPost.objects.filter(id=post_id).only("id").first()
+        post = (
+            _public_post_queryset()
+            .select_related("item", "user")
+            .filter(id=post_id)
+            .first()
+        )
         if not post:
             raise NotFound("Community post not found")
 
@@ -406,6 +509,9 @@ class CommunityPostLikeToggleView(APIView):
         else:
             CommunityPostLike.objects.create(post_id=post_id, user_id=user.id)
             liked = True
+            if post.user_id != user.id:
+                liker_name = user.nickname or f"用户{user.id}"
+                notify_post_liked(post, liker_name)
 
         like_count = CommunityPostLike.objects.filter(post_id=post_id).count()
         return api_success(

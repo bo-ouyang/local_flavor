@@ -19,7 +19,7 @@ from core.cache_utils import (
 from core.responses import api_success
 from core.time_utils import get_current_season
 from interactions.models import FlavorTag, FlavorVote
-from items.models import Item
+from items.models import Item, ItemAuditStatus
 from items.serializers import (
     FlavorVotePayloadSerializer,
     ItemCreateSerializer,
@@ -27,20 +27,21 @@ from items.serializers import (
     ItemReadSerializer,
     ItemTodayByRegionQuerySerializer,
 )
-from users.models import Region
+from items.tasks import audit_item, sync_user_preference_task
+from users.models import Region, UserPreferenceSnapshot
+from items.recommendation import score_item_for_user
+
+
+def _public_item_queryset():
+    return Item.objects.filter(is_visible=True, audit_status=ItemAuditStatus.APPROVED)
 
 
 class ItemListCreateView(APIView):
     def get(self, request):
+        current_user = get_current_user(request, required=False)
         query_serializer = ItemListQuerySerializer(data=request.query_params)
         query_serializer.is_valid(raise_exception=True)
         query = query_serializer.validated_data
-
-        version = get_namespace_version("items")
-        cache_key = build_cache_key("items:list", query, version=version)
-        cached = cache_get(cache_key)
-        if cached is not None:
-            return api_success(data=cached)
 
         skip = query["skip"]
         limit = query["limit"]
@@ -50,8 +51,25 @@ class ItemListCreateView(APIView):
         publisher_id = query.get("publisher_id")
         current_season_only = query.get("current_season_only", False)
         search_q = query.get("q")
+        can_use_cache = not current_user
 
-        queryset = Item.objects.all().select_related("user").prefetch_related("flavor_tags")
+        cache_key = None
+        if can_use_cache:
+            version = get_namespace_version("items")
+            cache_key = build_cache_key("items:list", query, version=version)
+            cached = cache_get(cache_key)
+            if cached is not None:
+                return api_success(data=cached)
+
+        queryset = Item.objects.select_related("user").prefetch_related("flavor_tags")
+        if current_user and publisher_id and current_user.id == publisher_id:
+            queryset = queryset.filter(user_id=publisher_id, is_visible=True)
+        else:
+            queryset = queryset.filter(
+                is_visible=True, audit_status=ItemAuditStatus.APPROVED
+            )
+            if publisher_id:
+                queryset = queryset.filter(user_id=publisher_id)
         if region_code:
             queryset = queryset.filter(region_code=region_code)
         if category:
@@ -60,8 +78,6 @@ class ItemListCreateView(APIView):
             queryset = queryset.filter(season=season)
         if current_season_only:
             queryset = queryset.filter(season=get_current_season())
-        if publisher_id:
-            queryset = queryset.filter(user_id=publisher_id)
         if search_q:
             queryset = queryset.filter(
                 Q(title__icontains=search_q)
@@ -73,8 +89,87 @@ class ItemListCreateView(APIView):
 
         items = queryset.order_by("-created_at")[skip : skip + limit]
         data = ItemReadSerializer(items, many=True).data
-        cache_set(cache_key, data, timeout=settings.CACHE_TTL_ITEMS_LIST)
+        if cache_key:
+            cache_set(cache_key, data, timeout=settings.CACHE_TTL_ITEMS_LIST)
         return api_success(data=data)
+
+class ItemRecommendedView(APIView):
+    def get(self, request):
+        user = get_current_user(request, required=True)
+        query_serializer = ItemListQuerySerializer(data=request.query_params)
+        query_serializer.is_valid(raise_exception=True)
+        query = query_serializer.validated_data
+
+        skip = query["skip"]
+        limit = query["limit"]
+        category = query.get("category")
+        search_q = query.get("q")
+
+        # Use cache restricted to this user
+        version = get_namespace_version("items")
+        cache_key = build_cache_key(
+            f"items:recommended:{user.id}",
+            query,
+            version=version,
+        )
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return api_success(data=cached)
+
+        snapshot = UserPreferenceSnapshot.objects.filter(user_id=user.id).first()
+        if not snapshot:
+            # Cold start fallback if no snapshot generated
+            snapshot = UserPreferenceSnapshot(user_id=user.id)
+
+        # Base query for approved visible items
+        queryset = _public_item_queryset().select_related("user").prefetch_related("flavor_tags")
+        
+        if category:
+            queryset = queryset.filter(category=category)
+        if search_q:
+            queryset = queryset.filter(
+                Q(title__icontains=search_q)
+                | Q(description__icontains=search_q)
+                | Q(province__icontains=search_q)
+                | Q(city__icontains=search_q)
+                | Q(flavor_tags__tag_name__icontains=search_q)
+            ).distinct()
+
+        # We need to fetch items to score them. To prevent pulling the whole DB, 
+        # we pull a larger reasonable pool (e.g. 200 recent items) and score those.
+        # In a real system you'd use a dedicated matching engine or vector DB here.
+        candidate_items = list(queryset.order_by("-created_at")[:200])
+        
+        scored_items = []
+        for item in candidate_items:
+            # Don't recommend the user's own items
+            if item.user_id == user.id:
+                continue
+                
+            score, reason_tags = score_item_for_user(item, user, snapshot)
+            scored_items.append({
+                "item": item,
+                "score": score,
+                "reason_tags": reason_tags
+            })
+            
+        # Sort by score desc, then fallback to created_at
+        scored_items.sort(key=lambda x: (x["score"], x["item"].created_at), reverse=True)
+        
+        # Paginate
+        page_items = scored_items[skip : skip + limit]
+        
+        # Serialize
+        models_to_serialize = [si["item"] for si in page_items]
+        serialized_data = ItemReadSerializer(models_to_serialize, many=True).data
+        
+        # Inject score and reason
+        for i, s_item in enumerate(page_items):
+            serialized_data[i]["score"] = s_item["score"]
+            serialized_data[i]["reason_tags"] = s_item["reason_tags"]
+
+        cache_set(cache_key, serialized_data, timeout=settings.CACHE_TTL_ITEMS_LIST)
+        return api_success(data=serialized_data)
 
     def post(self, request):
         user = get_current_user(request, required=True)
@@ -102,6 +197,7 @@ class ItemListCreateView(APIView):
                 seen.add(clean_name)
                 FlavorTag.objects.create(item=item, tag_name=clean_name, vote_count=1)
 
+        audit_item.delay(item.id)
         item = (
             Item.objects.select_related("user")
             .prefetch_related("flavor_tags")
@@ -112,7 +208,7 @@ class ItemListCreateView(APIView):
         bump_namespace_version("item_detail")
         return api_success(
             data=ItemReadSerializer(item).data,
-            message="item created",
+            message="item created, awaiting audit",
             status_code=status.HTTP_201_CREATED,
         )
 
@@ -139,49 +235,54 @@ class ItemTodayByRegionView(APIView):
             return api_success(data=cached)
 
         today = timezone.localdate()
-        items = (
-            Item.objects.filter(created_at__date=today)
-            .select_related("user")
-            .order_by("-created_at")
-        )
+        base_qs = _public_item_queryset().filter(created_at__date=today).select_related("user")
 
-        region_codes = {it.region_code for it in items if it.region_code}
+        # Group and count by region to find the top `region_limit` regions
+        top_regions = (
+            base_qs.exclude(region_code="")
+            .values("region_code")
+            .annotate(count=Count("id"))
+            .order_by("-count")[:region_limit]
+        )
+        region_codes = [r["region_code"] for r in top_regions]
+
+        # Fetch region names
         region_name_map = {
             row.code: row.name
             for row in Region.objects.filter(code__in=region_codes).only("code", "name")
         }
 
-        grouped = OrderedDict()
-        for it in items:
-            key = it.region_code or f"{it.province}-{it.city}"
-            if key not in grouped:
-                if len(grouped) >= region_limit:
-                    continue
-                grouped[key] = {
-                    "region_code": it.region_code,
-                    "region_name": region_name_map.get(it.region_code)
-                    or it.city
-                    or it.province
-                    or "未知地区",
-                    "province": it.province,
-                    "city": it.city,
-                    "items": [],
-                }
-            if len(grouped[key]["items"]) >= item_limit:
+        # Fetch limited items for each of the top regions
+        data = []
+        for rc in region_codes:
+            region_items = base_qs.filter(region_code=rc).order_by("-created_at")[:item_limit]
+            if not region_items:
                 continue
-            grouped[key]["items"].append(
-                {
-                    "id": it.id,
-                    "title": it.title,
-                    "images": it.images,
-                    "category": it.category,
-                    "season": it.season,
-                    "created_at": it.created_at,
-                    "user_id": it.user_id,
-                }
-            )
 
-        data = list(grouped.values())
+            first_item = region_items[0]
+            region_dict = {
+                "region_code": first_item.region_code,
+                "region_name": region_name_map.get(first_item.region_code)
+                or first_item.city
+                or first_item.province
+                or "未知地区",
+                "province": first_item.province,
+                "city": first_item.city,
+                "items": [
+                    {
+                        "id": it.id,
+                        "title": it.title,
+                        "images": it.images,
+                        "category": it.category,
+                        "season": it.season,
+                        "created_at": it.created_at,
+                        "user_id": it.user_id,
+                    }
+                    for it in region_items
+                ],
+            }
+            data.append(region_dict)
+
         cache_set(cache_key, data, timeout=settings.CACHE_TTL_ITEMS_TODAY)
         return api_success(data=data)
 
@@ -201,12 +302,17 @@ class ItemDetailView(APIView):
             if cached is not None:
                 return api_success(data=cached)
 
-        item = (
-            Item.objects.select_related("user")
-            .prefetch_related("flavor_tags")
-            .filter(id=item_id)
-            .first()
-        )
+        item_queryset = Item.objects.select_related("user").prefetch_related("flavor_tags")
+        if not current_user:
+            item_queryset = item_queryset.filter(
+                is_visible=True, audit_status=ItemAuditStatus.APPROVED
+            )
+        else:
+            item_queryset = item_queryset.filter(
+                Q(id=item_id, is_visible=True, audit_status=ItemAuditStatus.APPROVED)
+                | Q(id=item_id, user_id=current_user.id, is_visible=True)
+            )
+        item = item_queryset.filter(id=item_id).first()
         if not item:
             raise NotFound("Item not found")
 
@@ -230,7 +336,7 @@ class ItemFlavorVoteView(APIView):
         payload = FlavorVotePayloadSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
 
-        item = Item.objects.filter(id=item_id).first()
+        item = _public_item_queryset().filter(id=item_id).first()
         if not item:
             raise NotFound("Item not found")
 
@@ -273,6 +379,7 @@ class ItemFlavorVoteView(APIView):
                 target_tag.vote_count += 1
                 target_tag.save(update_fields=["vote_count"])
 
+        sync_user_preference_task.delay(user.id)
         bump_namespace_version("items")
         bump_namespace_version("item_detail")
         return api_success(

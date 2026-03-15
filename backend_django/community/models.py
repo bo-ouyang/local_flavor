@@ -5,6 +5,18 @@ from items.models import Item
 from users.models import LocalUser
 
 
+class CommunityAuditStatus:
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+    CHOICES = [
+        (PENDING, "Pending"),
+        (APPROVED, "Approved"),
+        (REJECTED, "Rejected"),
+    ]
+
+
 class CommunityPost(models.Model):
     user = models.ForeignKey(
         LocalUser, on_delete=models.CASCADE, related_name="community_posts"
@@ -21,7 +33,16 @@ class CommunityPost(models.Model):
     )
     content = models.TextField()
     images = models.JSONField(default=list)
+    is_visible = models.BooleanField(default=True, db_index=True)
+    audit_status = models.CharField(
+        max_length=16,
+        choices=CommunityAuditStatus.CHOICES,
+        default=CommunityAuditStatus.PENDING,
+        db_index=True,
+    )
+    audit_reason = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "community_posts"
@@ -29,6 +50,7 @@ class CommunityPost(models.Model):
             models.Index(fields=["created_at"]),
             models.Index(fields=["item", "created_at"]),
             models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["is_visible", "audit_status", "created_at"]),
         ]
 
 
@@ -40,6 +62,14 @@ class CommunityComment(models.Model):
         LocalUser, on_delete=models.CASCADE, related_name="community_comments"
     )
     content = models.CharField(max_length=500)
+    is_visible = models.BooleanField(default=True, db_index=True)
+    audit_status = models.CharField(
+        max_length=16,
+        choices=CommunityAuditStatus.CHOICES,
+        default=CommunityAuditStatus.PENDING,
+        db_index=True,
+    )
+    audit_reason = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     depth = models.PositiveIntegerField(default=0, db_index=True)
 
@@ -57,6 +87,7 @@ class CommunityComment(models.Model):
             models.Index(fields=["user", "created_at"]),
             models.Index(fields=["parent", "created_at"]),
             models.Index(fields=["root", "created_at"]),
+            models.Index(fields=["post", "is_visible", "audit_status", "created_at"]),
         ]
 
 

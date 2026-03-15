@@ -26,9 +26,21 @@ if DJANGO_ENV not in {"dev", "pro"}:
     DJANGO_ENV = "dev"
 _load_env_file(BASE_DIR / f"env.{DJANGO_ENV}")
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "replace-me-in-production")
+_secret_key = os.getenv("DJANGO_SECRET_KEY", "")
+if not _secret_key:
+    if DJANGO_ENV == "pro":
+        raise RuntimeError("DJANGO_SECRET_KEY must be set in production")
+    _secret_key = "dev-only-insecure-key-do-not-use-in-production"
+SECRET_KEY = _secret_key
+
 DEBUG = os.getenv("DJANGO_DEBUG", "1" if DJANGO_ENV == "dev" else "0") == "1"
-ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",")
+if DEBUG and DJANGO_ENV == "pro":
+    raise RuntimeError("DEBUG must not be enabled in production (DJANGO_ENV=pro)")
+
+_allowed_hosts_raw = os.getenv("DJANGO_ALLOWED_HOSTS", "" if DJANGO_ENV == "pro" else "*")
+if DJANGO_ENV == "pro" and (not _allowed_hosts_raw or _allowed_hosts_raw == "*"):
+    raise RuntimeError("DJANGO_ALLOWED_HOSTS must be explicitly set in production")
+ALLOWED_HOSTS = _allowed_hosts_raw.split(",")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -52,6 +64,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "core.middleware.SimpleCorsMiddleware",
     "core.middleware.RequestLogMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -138,6 +151,16 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_RATE_ANON", "60/minute"),
+        "user": os.getenv("THROTTLE_RATE_USER", "300/minute"),
+        "login": os.getenv("THROTTLE_RATE_LOGIN", "10/minute"),
+        "upload": os.getenv("THROTTLE_RATE_UPLOAD", "20/minute"),
+    },
 }
 
 AUTH_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", str(30 * 24 * 3600)))
@@ -242,6 +265,33 @@ else:
             "TIMEOUT": CACHE_DEFAULT_TTL,
         }
     }
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", _build_chat_redis_url())
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "300"))
+CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "0") == "1"
+
+COMMUNITY_AUDIT_BANNED_WORDS = [
+    word.strip()
+    for word in os.getenv("COMMUNITY_AUDIT_BANNED_WORDS", "").split(",")
+    if word.strip()
+]
+ITEM_AUDIT_BANNED_WORDS = [
+    word.strip()
+    for word in os.getenv("ITEM_AUDIT_BANNED_WORDS", "").split(",")
+    if word.strip()
+]
+CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL_ORIGINS", "0") == "1"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 LOGGING = {
     "version": 1,

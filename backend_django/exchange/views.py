@@ -13,7 +13,18 @@ from exchange.serializers import (
     ExchangeRequestReadSerializer,
     ExchangeStatusUpdateSerializer,
 )
-from items.models import Item
+from items.models import Item, ItemAuditStatus
+from messaging.services import send_system_notice
+from items.tasks import sync_user_preference_task
+
+
+def _is_first_completed_exchange(user_id: int) -> bool:
+    return (
+        ExchangeRequest.objects.filter(status=ExchangeStatus.COMPLETED)
+        .filter(Q(requester_id=user_id) | Q(owner_id=user_id))
+        .count()
+        == 1
+    )
 
 
 class ExchangeRequestListCreateView(APIView):
@@ -41,6 +52,11 @@ class ExchangeRequestListCreateView(APIView):
         requested_item = Item.objects.filter(id=serializer.validated_data["requested_item_id"]).first()
         if not requested_item:
             raise NotFound("Requested item not found")
+        if (
+            not requested_item.is_visible
+            or requested_item.audit_status != ItemAuditStatus.APPROVED
+        ):
+            raise ValidationError({"detail": "Requested item is not available for exchange"})
         if requested_item.user_id == user.id:
             raise ValidationError({"detail": "Cannot exchange with your own item"})
 
@@ -52,6 +68,11 @@ class ExchangeRequestListCreateView(APIView):
                 raise NotFound("Offered item not found")
             if offered_item.user_id != user.id:
                 raise PermissionDenied("Offered item must belong to requester")
+            if (
+                not offered_item.is_visible
+                or offered_item.audit_status != ItemAuditStatus.APPROVED
+            ):
+                raise ValidationError({"detail": "Offered item is not available for exchange"})
 
         with transaction.atomic():
             exchange = ExchangeRequest.objects.create(
@@ -102,6 +123,29 @@ class ExchangeStatusUpdateView(APIView):
 
         exchange.status = target_status
         exchange.save(update_fields=["status", "updated_at"])
+
+        if target_status == ExchangeStatus.COMPLETED:
+            requester_first_unlock = _is_first_completed_exchange(exchange.requester_id)
+            owner_first_unlock = _is_first_completed_exchange(exchange.owner_id)
+            item_title = exchange.requested_item.title
+            if requester_first_unlock:
+                send_system_notice(
+                    exchange.requester_id,
+                    f"你已完成第一笔特产交换，社区发布权限已解锁。现在可以围绕「{item_title}」发布交流动态了。",
+                    exchange.requested_item_id,
+                )
+            if owner_first_unlock and exchange.owner_id != exchange.requester_id:
+                send_system_notice(
+                    exchange.owner_id,
+                    f"你已完成第一笔特产交换，社区发布权限已解锁。现在可以围绕「{item_title}」发布交流动态了。",
+                    exchange.requested_item_id,
+                )
+            
+            # Recalculate recommendation preferences for both parties
+            sync_user_preference_task.delay(exchange.requester_id)
+            if exchange.requester_id != exchange.owner_id:
+                sync_user_preference_task.delay(exchange.owner_id)
+
         return api_success(
             data=ExchangeRequestReadSerializer(exchange).data,
             message="exchange status updated",

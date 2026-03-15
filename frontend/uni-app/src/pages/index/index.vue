@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <view class="page">
     <view class="header-wrap">
       <view class="header-top">
@@ -56,6 +56,13 @@
             <text class="product-season">{{ seasonMap[item.season] || item.season || '-' }}</text>
           </view>
           <text class="product-meta">{{ item.city || item.province || '未知地区' }}</text>
+          
+          <view v-if="Array.isArray(item.reason_tags) && item.reason_tags.length" class="reason-tags">
+            <text v-for="tag in item.reason_tags" :key="tag" class="reason-tag">
+              ✨ {{ tag }}
+            </text>
+          </view>
+          
           <text class="product-desc">{{ item.description || '暂无描述' }}</text>
         </view>
       </view>
@@ -151,7 +158,10 @@ const loadOptions = async () => {
   }
 }
 
+import { useUserStore } from '@/stores/user'
+
 const loadItems = async (isRefresh = false) => {
+  const userStore = useUserStore()
   const params: any = { limit: 20 }
   if (currentCategory.value) params.category = currentCategory.value
   const keyword = searchTerm.value.trim()
@@ -159,7 +169,18 @@ const loadItems = async (isRefresh = false) => {
 
   loading.value = true
   try {
-    const res: any = await request.get('/items/', params)
+    let res: any
+    // Try recommendations if user is logged in
+    if (userStore.token) {
+        try {
+            res = await request.authGet('/items/recommended', params)
+        } catch (e) {
+            console.warn('recommendation failed, fallback to normal list', e)
+            res = await request.get('/items/', params)
+        }
+    } else {
+        res = await request.get('/items/', params)
+    }
     items.value = normalizeItems(res)
   } catch (e) {
     console.error('load items failed', e)
@@ -404,5 +425,20 @@ onShow(async () => {
   text-align: center;
   color: #94a3b8;
   font-size: 24rpx;
+}
+
+.reason-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+  margin-top: 12rpx;
+}
+
+.reason-tag {
+  background: #fdf2f8;
+  color: #be185d;
+  font-size: 20rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 6rpx;
 }
 </style>

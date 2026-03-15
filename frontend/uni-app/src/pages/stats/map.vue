@@ -15,6 +15,23 @@
           @confirm="loadPosts"
         />
       </view>
+
+      <view class="sort-tabs">
+        <view
+          class="sort-tab"
+          :class="{ active: sortMode === 'latest' }"
+          @click="changeSort('latest')"
+        >
+          最新
+        </view>
+        <view
+          class="sort-tab"
+          :class="{ active: sortMode === 'hot' }"
+          @click="changeSort('hot')"
+        >
+          最热
+        </view>
+      </view>
     </view>
 
     <view class="feed">
@@ -90,6 +107,7 @@ import { ensureAuthed } from '@/utils/auth'
 const posts = ref<any[]>([])
 const loading = ref(false)
 const searchTerm = ref('')
+const sortMode = ref<'latest' | 'hot'>('latest')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const fallbackCover = 'https://dummyimage.com/400x300/f1f5f9/94a3b8&text=Community'
@@ -104,7 +122,7 @@ const coverOf = (post: any) => {
 const loadPosts = async (isRefresh = false) => {
   loading.value = true
   try {
-    const params: any = { limit: 30 }
+    const params: any = { limit: 30, sort: sortMode.value }
     const q = searchTerm.value.trim()
     if (q) params.q = q
     const res: any = await request.get('/community/posts', params)
@@ -123,6 +141,12 @@ const goDetail = (id: number) => {
 
 const goPublish = () => {
   uni.navigateTo({ url: '/pages/community/create' })
+}
+
+const changeSort = (mode: 'latest' | 'hot') => {
+  if (sortMode.value === mode) return
+  sortMode.value = mode
+  loadPosts()
 }
 
 const toggleLike = async (post: any) => {
@@ -220,6 +244,33 @@ onTabItemTap(() => {
   height: 72rpx;
   font-size: 26rpx;
   color: #0f172a;
+}
+
+.sort-tabs {
+  margin-top: 16rpx;
+  display: flex;
+  gap: 14rpx;
+}
+
+.sort-tab {
+  min-width: 112rpx;
+  height: 56rpx;
+  padding: 0 20rpx;
+  border-radius: 999rpx;
+  background: #f8fafc;
+  color: #64748b;
+  border: 1rpx solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 23rpx;
+  font-weight: 700;
+}
+
+.sort-tab.active {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fdba74;
 }
 
 .feed {

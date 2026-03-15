@@ -205,15 +205,15 @@ const submitPost = async () => {
 
   submitting.value = true
   try {
-    await request.authPost('/community/posts', {
+    const created: any = await request.authPost('/community/posts', {
       item_id: selectedItem.value.id,
       content: content.value.trim(),
       images: images.value
     })
-    uni.showToast({ title: '发布成功', icon: 'success' })
+    uni.showToast({ title: '已提交审核', icon: 'success' })
     resetForm()
     setTimeout(() => {
-      uni.switchTab({ url: '/pages/stats/map' })
+      uni.redirectTo({ url: `/pages/community/detail?id=${created.id}` })
     }, 300)
   } catch (error) {
     console.error('publish community post failed', error)

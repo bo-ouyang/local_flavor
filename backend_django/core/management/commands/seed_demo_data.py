@@ -320,37 +320,89 @@ class Command(BaseCommand):
             )
 
         # Seed exchange requests.
-        ExchangeRequest.objects.get_or_create(
-            requester=alice,
-            owner=carol,
-            requested_item=items_by_title["广州荔枝干"],
-            offered_item=items_by_title["成都麻辣兔头"],
-            defaults={"message": "我用兔头换荔枝干", "status": ExchangeStatus.PENDING},
+        existing_pending_exchange = (
+            ExchangeRequest.objects.filter(
+                requester=alice,
+                owner=carol,
+                requested_item=items_by_title["广州荔枝干"],
+                offered_item=items_by_title["成都麻辣兔头"],
+                status=ExchangeStatus.PENDING,
+            )
+            .order_by("-id")
+            .first()
         )
-        ExchangeRequest.objects.get_or_create(
-            requester=users_by_phone["13800000001"],
-            owner=users_by_phone["13800000003"],
-            requested_item=items_by_title["上海葱油拌面"],
-            offered_item=items_by_title["成都冰粉"],
-            defaults={"message": "想交换尝尝", "status": ExchangeStatus.ACCEPTED},
-        )
+        if not existing_pending_exchange:
+            ExchangeRequest.objects.create(
+                requester=alice,
+                owner=carol,
+                requested_item=items_by_title["广州荔枝干"],
+                offered_item=items_by_title["成都麻辣兔头"],
+                message="我用兔头换荔枝干",
+                status=ExchangeStatus.PENDING,
+            )
 
-        completed_exchange_1, _ = ExchangeRequest.objects.get_or_create(
-            requester=alice,
-            owner=carol,
-            requested_item=items_by_owner_phone["13800000002"],
-            offered_item=items_by_owner_phone["13800000000"],
-            status=ExchangeStatus.COMPLETED,
-            defaults={"message": "seed completed exchange 1"},
+        existing_accepted_exchange = (
+            ExchangeRequest.objects.filter(
+                requester=users_by_phone["13800000001"],
+                owner=users_by_phone["13800000003"],
+                requested_item=items_by_title["上海葱油拌面"],
+                offered_item=items_by_title["成都冰粉"],
+                status=ExchangeStatus.ACCEPTED,
+            )
+            .order_by("-id")
+            .first()
         )
-        completed_exchange_2, _ = ExchangeRequest.objects.get_or_create(
-            requester=users_by_phone["13800000001"],
-            owner=users_by_phone["13800000003"],
-            requested_item=items_by_owner_phone["13800000003"],
-            offered_item=items_by_owner_phone["13800000001"],
-            status=ExchangeStatus.COMPLETED,
-            defaults={"message": "seed completed exchange 2"},
+        if not existing_accepted_exchange:
+            ExchangeRequest.objects.create(
+                requester=users_by_phone["13800000001"],
+                owner=users_by_phone["13800000003"],
+                requested_item=items_by_title["上海葱油拌面"],
+                offered_item=items_by_title["成都冰粉"],
+                message="想交换尝尝",
+                status=ExchangeStatus.ACCEPTED,
+            )
+
+        completed_exchange_1 = (
+            ExchangeRequest.objects.filter(
+                requester=alice,
+                owner=carol,
+                requested_item=items_by_owner_phone["13800000002"],
+                offered_item=items_by_owner_phone["13800000000"],
+                status=ExchangeStatus.COMPLETED,
+            )
+            .order_by("-id")
+            .first()
         )
+        if not completed_exchange_1:
+            completed_exchange_1 = ExchangeRequest.objects.create(
+                requester=alice,
+                owner=carol,
+                requested_item=items_by_owner_phone["13800000002"],
+                offered_item=items_by_owner_phone["13800000000"],
+                status=ExchangeStatus.COMPLETED,
+                message="seed completed exchange 1",
+            )
+
+        completed_exchange_2 = (
+            ExchangeRequest.objects.filter(
+                requester=users_by_phone["13800000001"],
+                owner=users_by_phone["13800000003"],
+                requested_item=items_by_owner_phone["13800000003"],
+                offered_item=items_by_owner_phone["13800000001"],
+                status=ExchangeStatus.COMPLETED,
+            )
+            .order_by("-id")
+            .first()
+        )
+        if not completed_exchange_2:
+            completed_exchange_2 = ExchangeRequest.objects.create(
+                requester=users_by_phone["13800000001"],
+                owner=users_by_phone["13800000003"],
+                requested_item=items_by_owner_phone["13800000003"],
+                offered_item=items_by_owner_phone["13800000001"],
+                status=ExchangeStatus.COMPLETED,
+                message="seed completed exchange 2",
+            )
 
         alice_post, _ = CommunityPost.objects.get_or_create(
             user=alice,

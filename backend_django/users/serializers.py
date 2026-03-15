@@ -8,16 +8,12 @@ class LocalUserReadSerializer(serializers.ModelSerializer):
         model = LocalUser
         fields = [
             "id",
-            "openid",
-            "phone",
             "nickname",
             "avatar",
             "is_verified",
             "region_code",
             "province",
             "city",
-            "latitude",
-            "longitude",
             "last_region_update",
             "created_at",
         ]

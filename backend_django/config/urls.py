@@ -17,8 +17,8 @@ def root(_request):
 
 urlpatterns = [
     path("", root),
-    path("admin/", admin.site.urls),
-    path("api/v1/", include("config.api_urls")),
+    path("django/admin/", admin.site.urls),
+    path("django/api/v1/", include("config.api_urls")),
 ]
 
 if settings.DEBUG:

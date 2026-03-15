@@ -51,6 +51,7 @@ class CommunityPostListQuerySerializer(serializers.Serializer):
     skip = serializers.IntegerField(min_value=0, required=False, default=0)
     limit = serializers.IntegerField(min_value=1, max_value=50, required=False, default=20)
     q = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    sort = serializers.ChoiceField(choices=["latest", "hot"], required=False, default="latest")
 
     def validate_q(self, value):
         return value.strip()
@@ -80,6 +81,8 @@ class CommunityPostReadSerializer(serializers.ModelSerializer):
     is_liked = serializers.BooleanField(read_only=True)
     author_tag = serializers.CharField(read_only=True)
     exchange_hint = serializers.CharField(read_only=True)
+    audit_status = serializers.CharField(read_only=True)
+    audit_reason = serializers.CharField(read_only=True)
 
     class Meta:
         model = CommunityPost
@@ -99,6 +102,8 @@ class CommunityPostReadSerializer(serializers.ModelSerializer):
             "is_liked",
             "author_tag",
             "exchange_hint",
+            "audit_status",
+            "audit_reason",
         ]
 
 
@@ -116,5 +121,7 @@ class CommunityCommentReadSerializer(serializers.ModelSerializer):
             "parent_id",
             "root_id",
             "depth",
+            "audit_status",
+            "audit_reason",
             "user",
         ]

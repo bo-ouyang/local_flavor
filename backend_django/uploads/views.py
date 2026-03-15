@@ -10,10 +10,12 @@ from rest_framework.views import APIView
 
 from core.auth import get_current_user
 from core.responses import api_success
+from core.throttles import UploadRateThrottle
 
 
 class UploadView(APIView):
     ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+    throttle_classes = [UploadRateThrottle]
 
     def _allowed_formats(self):
         raw = getattr(settings, "UPLOAD_ALLOWED_IMAGE_FORMATS", "JPEG,PNG,WEBP")

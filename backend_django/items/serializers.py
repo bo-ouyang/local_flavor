@@ -74,6 +74,8 @@ class ItemReadSerializer(serializers.ModelSerializer):
     publisher = LocalUserReadSerializer(source="user", read_only=True)
     flavor_tags = serializers.SerializerMethodField()
     user_id = serializers.IntegerField(read_only=True)
+    audit_status = serializers.CharField(read_only=True)
+    audit_reason = serializers.CharField(read_only=True)
 
     class Meta:
         model = Item
@@ -94,6 +96,8 @@ class ItemReadSerializer(serializers.ModelSerializer):
             "user_id",
             "publisher",
             "flavor_tags",
+            "audit_status",
+            "audit_reason",
         ]
 
     def get_flavor_tags(self, obj):

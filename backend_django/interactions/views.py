@@ -33,11 +33,29 @@ class CommentListCreateView(APIView):
         if cached is not None:
             return api_success(data=cached)
 
-        comments = Comment.objects.filter(item_id=item_id).select_related("user").order_by("created_at")
-        nodes = {}
-        roots = []
+        # Determine root comments and paginate them
+        root_comments_qs = (
+            Comment.objects.filter(item_id=item_id, parent_id__isnull=True)
+            .select_related("user")
+            .order_by("created_at")
+        )
 
-        for c in comments:
+        roots = list(root_comments_qs[:root_limit])
+        root_ids = [c.id for c in roots]
+
+        # Fetch all replies for identified root comments
+        replies_qs = (
+            Comment.objects.filter(item_id=item_id, root_id__in=root_ids)
+            .select_related("user")
+            .order_by("created_at")
+        )
+        replies = list(replies_qs)
+
+        nodes = {}
+        result_roots = []
+
+        # Convert to dictionary for tree building.
+        for c in roots + replies:
             nodes[c.id] = {
                 "id": c.id,
                 "content": c.content,
@@ -56,19 +74,16 @@ class CommentListCreateView(APIView):
                 "replies": [],
             }
 
-        for c in comments:
+        for c in roots + replies:
             node = nodes[c.id]
             if c.parent_id and c.parent_id in nodes:
                 nodes[c.parent_id]["replies"].append(node)
                 nodes[c.parent_id]["children_count"] += 1
-            else:
-                roots.append(node)
+            elif not c.parent_id:
+                result_roots.append(node)
 
-        if len(roots) > root_limit:
-            roots = roots[-root_limit:]
-
-        cache_set(cache_key, roots, timeout=settings.CACHE_TTL_COMMENTS)
-        return api_success(data=roots)
+        cache_set(cache_key, result_roots, timeout=settings.CACHE_TTL_COMMENTS)
+        return api_success(data=result_roots)
 
     def post(self, request, item_id: int):
         user = get_current_user(request, required=True)

@@ -57,6 +57,7 @@ import { goLogin } from '@/utils/auth'
 const userStore = useUserStore()
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
 const WS_BASE = API_BASE.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '')
+const WS_ENABLED = (import.meta as any).env?.VITE_CHAT_ENABLE_WS === '1'
 const isAuthed = computed(() => !!userStore.token)
 const conversationId = ref(0)
 const targetId = ref(0)
@@ -67,8 +68,11 @@ const showMyItems = ref(false)
 const myItems = ref<any[]>([])
 const sending = ref(false)
 const wsConnected = ref(false)
+const wsUnavailable = ref(false)
+const wsConnecting = ref(false)
 let socketTask: UniApp.SocketTask | null = null
 let pollingTimer: any = null
+let manualSocketClosing = false
 
 const sortBySeq = (list: any[]) => {
   return [...list].sort((a, b) => (a.seq || 0) - (b.seq || 0))
@@ -207,7 +211,7 @@ const formatMessageTime = (iso?: string) => {
 }
 
 const startPolling = () => {
-  if (pollingTimer) clearInterval(pollingTimer)
+  if (pollingTimer) return
   pollingTimer = setInterval(() => {
     pollLatest()
   }, 5000)
@@ -231,7 +235,9 @@ const handleSocketPayload = async (payload: any) => {
 
 const closeSocket = () => {
   wsConnected.value = false
+  wsConnecting.value = false
   if (socketTask) {
+    manualSocketClosing = true
     try {
       socketTask.close({})
     } catch (e) {
@@ -242,15 +248,28 @@ const closeSocket = () => {
 }
 
 const connectSocket = () => {
-  if (!conversationId.value || !userStore.token || socketTask) return
+  if (!WS_ENABLED) {
+    wsUnavailable.value = true
+    return
+  }
+  if (!conversationId.value || !userStore.token || socketTask || wsUnavailable.value || wsConnecting.value) {
+    return
+  }
+  wsConnecting.value = true
   const url = `${WS_BASE}/ws/chat/conversations/${conversationId.value}/?token=${encodeURIComponent(userStore.token)}`
   socketTask = uni.connectSocket({
     url,
+    header: {
+      Authorization: `Bearer ${userStore.token}`
+    },
     complete: () => {}
   })
 
   socketTask.onOpen(() => {
     wsConnected.value = true
+    wsConnecting.value = false
+    wsUnavailable.value = false
+    manualSocketClosing = false
   })
 
   socketTask.onMessage((res) => {
@@ -264,18 +283,27 @@ const connectSocket = () => {
 
   socketTask.onClose(() => {
     wsConnected.value = false
+    wsConnecting.value = false
+    if (!manualSocketClosing && !wsUnavailable.value) {
+      wsUnavailable.value = true
+    }
+    manualSocketClosing = false
     socketTask = null
   })
 
   socketTask.onError((err) => {
     console.error('socket error', err)
     wsConnected.value = false
+    wsConnecting.value = false
+    wsUnavailable.value = true
+    manualSocketClosing = false
     socketTask = null
   })
 }
 
 onLoad(async (options: any) => {
   if (!isAuthed.value) return
+  wsUnavailable.value = !WS_ENABLED
 
   if (options?.nickname) {
     try {
@@ -302,7 +330,7 @@ onLoad(async (options: any) => {
 onShow(async () => {
   if (!isAuthed.value) return
   if (conversationId.value) {
-    if (!wsConnected.value) connectSocket()
+    if (!wsConnected.value && !wsUnavailable.value) connectSocket()
     await pollLatest()
   }
 })

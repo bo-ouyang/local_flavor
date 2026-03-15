@@ -32,6 +32,15 @@
           </view>
         </view>
 
+        <view v-if="isOwner && post.audit_status !== 'approved'" class="audit-box">
+          <text class="audit-title">{{ auditTitle }}</text>
+          <text class="audit-desc">{{ auditDescription }}</text>
+        </view>
+
+        <view v-if="isOwner" class="manage-row">
+          <text class="manage-btn danger" @click="deletePost">删除帖子</text>
+        </view>
+
         <view class="item-card">
           <image :src="itemCover" mode="aspectFill" class="item-cover" />
           <view class="item-info">
@@ -76,9 +85,18 @@
                 <text class="comment-time">{{ formatDate(comment.created_at) }}</text>
               </view>
               <text class="comment-content">{{ comment.content }}</text>
-              <text class="comment-action">
-                {{ comment.level > 0 ? '继续回复' : '回复这条评论' }}
-              </text>
+              <view class="comment-actions">
+                <text class="comment-action">
+                  {{ comment.level > 0 ? '继续回复' : '回复这条评论' }}
+                </text>
+                <text
+                  v-if="canDeleteComment(comment)"
+                  class="comment-delete"
+                  @click.stop="deleteComment(comment)"
+                >
+                  删除
+                </text>
+              </view>
             </view>
           </view>
         </view>
@@ -118,7 +136,9 @@ import { computed, ref } from 'vue'
 import { onLoad, onPullDownRefresh } from '@dcloudio/uni-app'
 import request from '@/utils/request'
 import { ensureAuthed } from '@/utils/auth'
+import { useUserStore } from '@/stores/user'
 
+const userStore = useUserStore()
 const post = ref<any>(null)
 const commentsTree = ref<any[]>([])
 const commentText = ref('')
@@ -129,6 +149,17 @@ const defaultAvatar = 'https://dummyimage.com/200x200/e2e8f0/94a3b8&text=User'
 const defaultCover = 'https://dummyimage.com/800x600/f1f5f9/94a3b8&text=Community'
 
 const canComment = computed(() => !!post.value?.can_comment)
+const isOwner = computed(() => !!post.value && post.value.user_id === userStore.userInfo.id)
+const auditTitle = computed(() => {
+  if (post.value?.audit_status === 'rejected') return '内容未通过审核'
+  return '内容审核中'
+})
+const auditDescription = computed(() => {
+  if (post.value?.audit_status === 'rejected') {
+    return post.value?.audit_reason || '请修改内容后重新发布。'
+  }
+  return '审核通过后会在社区列表中公开展示。'
+})
 
 const itemCover = computed(() => {
   if (Array.isArray(post.value?.item?.images) && post.value.item.images.length) {
@@ -185,6 +216,10 @@ const previewImage = (current: string) => {
   })
 }
 
+const canDeleteComment = (comment: any) => {
+  return comment.user_id === userStore.userInfo.id || isOwner.value
+}
+
 const toggleLike = async () => {
   if (!post.value?.id) return
   if (!ensureAuthed({ toast: '请先登录后点赞' })) return
@@ -194,6 +229,47 @@ const toggleLike = async () => {
     post.value.like_count = Number(res?.like_count || 0)
   } catch (error) {
     console.error('toggle detail like failed', error)
+  }
+}
+
+const deletePost = async () => {
+  if (!isOwner.value || !post.value?.id) return
+  const res = await new Promise<boolean>((resolve) => {
+    uni.showModal({
+      title: '删除帖子',
+      content: '删除后帖子将不再展示，是否继续？',
+      success: (modalRes) => resolve(!!modalRes.confirm),
+      fail: () => resolve(false)
+    })
+  })
+  if (!res) return
+  try {
+    await request.authDelete(`/community/posts/${post.value.id}`)
+    uni.showToast({ title: '已删除', icon: 'success' })
+    setTimeout(() => {
+      uni.navigateBack()
+    }, 300)
+  } catch (error) {
+    console.error('delete community post failed', error)
+  }
+}
+
+const deleteComment = async (comment: any) => {
+  const confirmed = await new Promise<boolean>((resolve) => {
+    uni.showModal({
+      title: '删除评论',
+      content: '删除后评论将不再展示，是否继续？',
+      success: (modalRes) => resolve(!!modalRes.confirm),
+      fail: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
+  try {
+    await request.authDelete(`/community/posts/${postId.value}/comments/${comment.id}`)
+    uni.showToast({ title: '评论已删除', icon: 'success' })
+    await reloadPage()
+  } catch (error) {
+    console.error('delete community comment failed', error)
   }
 }
 
@@ -405,6 +481,49 @@ onPullDownRefresh(async () => {
   border: 1rpx solid #fed7aa;
 }
 
+.audit-box {
+  margin-top: 18rpx;
+  padding: 16rpx 18rpx;
+  border-radius: 18rpx;
+  background: #fff7ed;
+  border: 1rpx solid #fed7aa;
+}
+
+.audit-title {
+  display: block;
+  font-size: 25rpx;
+  font-weight: 700;
+  color: #9a3412;
+}
+
+.audit-desc {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  line-height: 1.55;
+  color: #c2410c;
+}
+
+.manage-row {
+  margin-top: 16rpx;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.manage-btn {
+  padding: 10rpx 16rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  border: 1rpx solid #e2e8f0;
+  color: #475569;
+}
+
+.manage-btn.danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+}
+
 .item-cover {
   width: 148rpx;
   height: 148rpx;
@@ -537,10 +656,21 @@ onPullDownRefresh(async () => {
 }
 
 .comment-action {
-  display: block;
-  margin-top: 10rpx;
   font-size: 21rpx;
   color: #ea580c;
+}
+
+.comment-actions {
+  margin-top: 10rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.comment-delete {
+  font-size: 21rpx;
+  color: #be123c;
 }
 
 .composer {

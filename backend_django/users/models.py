@@ -45,3 +45,15 @@ class Region(models.Model):
         indexes = [
             models.Index(fields=["parent", "level"]),
         ]
+
+
+class UserPreferenceSnapshot(models.Model):
+    user = models.OneToOneField(LocalUser, on_delete=models.CASCADE, related_name="preference_snapshot")
+    flavor_vector = models.JSONField(default=list)
+    category_weights = models.JSONField(default=dict)
+    region_weights = models.JSONField(default=dict)
+    exchange_completed_count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_preference_snapshots"

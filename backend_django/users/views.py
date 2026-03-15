@@ -10,6 +10,7 @@ from core.auth import get_current_user
 from core.auth import issue_token
 from core.geolocation import reverse_geocode
 from core.responses import api_success
+from core.throttles import LoginRateThrottle
 from core.wechat import code2session
 from users.models import LocalUser, Region
 from users.serializers import (
@@ -18,6 +19,7 @@ from users.serializers import (
     UserRegionUpdateSerializer,
     WechatLoginSerializer,
 )
+from items.tasks import sync_user_preference_task
 
 
 def _resolve_region_code(province: str, city: str, fallback: str = "") -> str:
@@ -45,6 +47,7 @@ def _resolve_region_code(province: str, city: str, fallback: str = "") -> str:
 class WechatLoginView(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
         serializer = WechatLoginSerializer(data=request.data)
@@ -94,6 +97,7 @@ class WechatLoginView(APIView):
 class PhoneLoginView(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
         serializer = PhoneLoginSerializer(data=request.data)
@@ -164,5 +168,8 @@ class RegionUpdateView(APIView):
             user.longitude = longitude
             update_fields.extend(["latitude", "longitude"])
         user.save(update_fields=update_fields)
+        
+        # Trigger recommendation preference sync
+        sync_user_preference_task.delay(user.id)
 
         return api_success(data=LocalUserReadSerializer(user).data, message="region updated")

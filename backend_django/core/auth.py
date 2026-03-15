@@ -29,11 +29,8 @@ def issue_token(openid: str) -> str:
 
 
 def resolve_openid_from_token(token: str) -> Optional[str]:
-    if not token:
+    if not token or ":" not in token:
         return None
-    # Backward compatibility: allow old plain-openid token.
-    if ":" not in token:
-        return token
     try:
         return str(_signer.unsign(token, max_age=_token_ttl_seconds))
     except (BadSignature, SignatureExpired):
