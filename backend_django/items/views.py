@@ -27,7 +27,10 @@ from items.serializers import (
 )
 from items.tasks import audit_item, sync_user_preference_task
 from users.models import Region, UserPreferenceSnapshot
-from items.recommendation import score_item_for_user
+from items.recommendation import (
+    get_publisher_completed_counts,
+    score_item_for_user,
+)
 
 
 def _public_item_queryset():
@@ -179,6 +182,9 @@ class ItemRecommendedView(APIView):
         # we pull a larger reasonable pool (e.g. 200 recent items) and score those.
         # In a real system you'd use a dedicated matching engine or vector DB here.
         candidate_items = list(queryset.order_by("-created_at")[:200])
+        publisher_completed_counts = get_publisher_completed_counts(
+            item.user_id for item in candidate_items
+        )
         
         scored_items = []
         for item in candidate_items:
@@ -186,7 +192,15 @@ class ItemRecommendedView(APIView):
             if item.user_id == user.id:
                 continue
                 
-            score, reason_tags = score_item_for_user(item, user, snapshot)
+            score, reason_tags = score_item_for_user(
+                item,
+                user,
+                snapshot,
+                publisher_completed_count=publisher_completed_counts.get(
+                    item.user_id,
+                    0,
+                ),
+            )
             scored_items.append({
                 "item": item,
                 "score": score,

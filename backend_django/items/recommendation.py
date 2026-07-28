@@ -1,7 +1,9 @@
-from typing import Dict, List, Tuple
-from django.db.models import Count
-from django.utils import timezone
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from django.db.models import Count, F
 from django.db.models import Q
+from django.utils import timezone
+
 from core.time_utils import get_current_season
 from exchange.models import ExchangeRequest, ExchangeStatus
 from interactions.models import FlavorVote
@@ -74,11 +76,46 @@ def sync_user_preference(user_id: int):
     snapshot.save()
 
 
-def score_item_for_user(item: Item, user: LocalUser, snapshot: UserPreferenceSnapshot) -> Tuple[float, List[str]]:
+def get_publisher_completed_counts(user_ids: Iterable[int]) -> Dict[int, int]:
+    normalized_ids = {int(user_id) for user_id in user_ids if user_id}
+    if not normalized_ids:
+        return {}
+
+    counts = {user_id: 0 for user_id in normalized_ids}
+    requester_rows = (
+        ExchangeRequest.objects.filter(
+            status=ExchangeStatus.COMPLETED,
+            requester_id__in=normalized_ids,
+        )
+        .values("requester_id")
+        .annotate(total=Count("id"))
+    )
+    owner_rows = (
+        ExchangeRequest.objects.filter(
+            status=ExchangeStatus.COMPLETED,
+            owner_id__in=normalized_ids,
+        )
+        .exclude(owner_id=F("requester_id"))
+        .values("owner_id")
+        .annotate(total=Count("id"))
+    )
+    for row in requester_rows:
+        counts[row["requester_id"]] += row["total"]
+    for row in owner_rows:
+        counts[row["owner_id"]] += row["total"]
+    return counts
+
+
+def score_item_for_user(
+    item: Item,
+    user: LocalUser,
+    snapshot: UserPreferenceSnapshot,
+    publisher_completed_count: Optional[int] = None,
+) -> Tuple[float, List[str]]:
     """
     Score an item based on the user's preference snapshot.
     Returns (score, reason_tags)
-    Total Score = Flavor(35%) + Category(20%) + Season(15%) + Region(10%) + ExchangeRate(10%) + Freshness(10%)
+    Total Score = Flavor(35%) + Category(20%) + Season(15%) + Region(10%) + ExchangeExperience(10%) + Freshness(10%)
     """
     score = 0.0
     reason_tags = []
@@ -113,17 +150,19 @@ def score_item_for_user(item: Item, user: LocalUser, snapshot: UserPreferenceSna
         score += 0.05
         reason_tags.append("常换地区")
 
-    # 5. Exchange Completion Rate (10%)
-    # For phase 1, we approximate this by checking the publisher's completed exchanges
-    publisher_completed = ExchangeRequest.objects.filter(
-        status=ExchangeStatus.COMPLETED
-    ).filter(
-        Q(requester_id=item.user_id) | Q(owner_id=item.user_id)
-    ).count()
+    # 5. Exchange Experience (10%)
+    # Use the number of completed exchanges involving the publisher.
+    publisher_completed = publisher_completed_count
+    if publisher_completed is None:
+        publisher_completed = (
+            ExchangeRequest.objects.filter(status=ExchangeStatus.COMPLETED)
+            .filter(Q(requester_id=item.user_id) | Q(owner_id=item.user_id))
+            .count()
+        )
     if publisher_completed > 0:
         score += min(0.10, publisher_completed * 0.02)
         if publisher_completed > 5:
-            reason_tags.append("交换完成率高")
+            reason_tags.append("交换经验丰富")
 
     # 6. Freshness (10%)
     days_old = (timezone.now() - item.created_at).days
