@@ -36,7 +36,7 @@ def sync_user_preference(user_id: int):
     completed_exchanges = ExchangeRequest.objects.filter(
         status=ExchangeStatus.COMPLETED
     ).filter(
-        models.Q(requester_id=user_id) | models.Q(owner_id=user_id)
+        Q(requester_id=user_id) | Q(owner_id=user_id)
     ).select_related("requested_item", "offered_item")
 
     exchange_completed_count = completed_exchanges.count()
@@ -105,15 +105,12 @@ def score_item_for_user(item: Item, user: LocalUser, snapshot: UserPreferenceSna
         reason_tags.append("当季推荐")
 
     # 4. Region Relevance (10%)
-    region_match = False
     if item.region_code == user.region_code:
         score += 0.10
-        region_match = True
         reason_tags.append("同城优先")
     elif item.region_code in snapshot.region_weights:
         # Match based on history of exchanges
         score += 0.05
-        region_match = True
         reason_tags.append("常换地区")
 
     # 5. Exchange Completion Rate (10%)

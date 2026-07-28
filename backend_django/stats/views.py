@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 
 from core.cache_utils import build_cache_key, cache_get, cache_set, get_namespace_version
 from core.responses import api_success
-from items.models import Item
+from items.models import Item, ItemAuditStatus
 from stats.serializers import MapStatsQuerySerializer
 
 
@@ -33,7 +33,11 @@ class MapStatsView(APIView):
         cutoff = timezone.now() - timedelta(days=days)
 
         rows = (
-            Item.objects.filter(created_at__gt=cutoff)
+            Item.objects.filter(
+                created_at__gt=cutoff,
+                is_visible=True,
+                audit_status=ItemAuditStatus.APPROVED,
+            )
             .values("province")
             .annotate(count=Count("id"))
             .order_by("-count")

@@ -2,7 +2,7 @@
   <view class="page">
     <view v-if="!isAuthed" class="guest">
       <text class="guest-title">登录后可查看交换记录</text>
-      <button type="primary" size="mini" @click="goLogin()">去登录</button>
+      <button :type="('primary' as any)" size="mini" @click="goLogin()">去登录</button>
     </view>
 
     <template v-else>
@@ -29,7 +29,7 @@
           </view>
 
           <view class="actions" v-if="showActions(req)">
-            <button size="mini" type="primary" @click="updateStatus(req.id, 'accepted')">同意</button>
+            <button size="mini" :type="('primary' as any)" @click="updateStatus(req.id, 'accepted')">同意</button>
             <button size="mini" @click="updateStatus(req.id, 'rejected')">拒绝</button>
           </view>
 
@@ -38,7 +38,7 @@
           </view>
 
           <view class="actions" v-if="showComplete(req)">
-            <button size="mini" type="warn" @click="updateStatus(req.id, 'completed')">完成交换</button>
+            <button size="mini" :type="('warn' as any)" @click="updateStatus(req.id, 'completed')">完成交换</button>
           </view>
         </view>
       </view>

@@ -37,6 +37,11 @@ def get_namespace_version(namespace: str) -> int:
     if current is None:
         cache.set(key, 1, timeout=None)
         return 1
+    try:
+        return int(current)
+    except (TypeError, ValueError):
+        cache.set(key, 1, timeout=None)
+        return 1
 
 
 def cache_get(key: str):
@@ -52,11 +57,6 @@ def cache_set(key: str, value, timeout: int | None = None) -> bool:
         return True
     except Exception:
         return False
-    try:
-        return int(current)
-    except Exception:
-        cache.set(key, 1, timeout=None)
-        return 1
 
 
 def bump_namespace_version(namespace: str) -> int:

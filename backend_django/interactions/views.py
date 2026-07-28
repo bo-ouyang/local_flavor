@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
@@ -14,11 +15,27 @@ from core.cache_utils import (
 from core.responses import api_success
 from interactions.models import Comment
 from interactions.serializers import CommentCreateSerializer, CommentListQuerySerializer
-from items.models import Item
+from items.models import Item, ItemAuditStatus
+
+
+def _get_readable_item(request, item_id: int) -> Item:
+    current_user = get_current_user(request, required=False)
+    queryset = Item.objects.filter(id=item_id, is_visible=True)
+    if current_user:
+        queryset = queryset.filter(
+            Q(audit_status=ItemAuditStatus.APPROVED) | Q(user_id=current_user.id)
+        )
+    else:
+        queryset = queryset.filter(audit_status=ItemAuditStatus.APPROVED)
+    item = queryset.first()
+    if not item:
+        raise NotFound("Item not found")
+    return item
 
 
 class CommentListCreateView(APIView):
     def get(self, request, item_id: int):
+        _get_readable_item(request, item_id)
         query_serializer = CommentListQuerySerializer(data=request.query_params)
         query_serializer.is_valid(raise_exception=True)
         root_limit = query_serializer.validated_data["root_limit"]
@@ -90,7 +107,11 @@ class CommentListCreateView(APIView):
         serializer = CommentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        item = Item.objects.filter(id=item_id).first()
+        item = Item.objects.filter(
+            id=item_id,
+            is_visible=True,
+            audit_status=ItemAuditStatus.APPROVED,
+        ).first()
         if not item:
             raise NotFound("Item not found")
 

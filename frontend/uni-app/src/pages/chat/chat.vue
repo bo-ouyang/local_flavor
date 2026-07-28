@@ -2,7 +2,7 @@
   <view class="page">
     <view v-if="!isAuthed" class="guest">
       <text class="guest-title">登录后可聊天</text>
-      <button type="primary" size="mini" @click="goLogin()">去登录</button>
+      <button :type="('primary' as any)" size="mini" @click="goLogin()">去登录</button>
     </view>
 
     <template v-else>

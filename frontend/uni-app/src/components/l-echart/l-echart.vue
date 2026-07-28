@@ -25,7 +25,6 @@ const props = defineProps({
 const emit = defineEmits(['click'])
 
 const canvasId = ref(`ec-canvas-${Date.now()}`)
-const ctx = ref<any>(null)
 const chart = ref<any>(null)
 const instance = getCurrentInstance()
 
@@ -33,7 +32,7 @@ const init = () => {
     console.log('l-echart init called')
 	const query = uni.createSelectorQuery().in(instance)
 	query.select(`#${canvasId.value}`)
-		.fields({ node: true, size: true })
+		.fields({ node: true, size: true }, () => {})
 		.exec((res) => {
             console.log('l-echart query result:', res)
 			if (!res[0] || !res[0].node) {

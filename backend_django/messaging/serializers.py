@@ -21,7 +21,6 @@ class MessageCreateSerializer(serializers.Serializer):
             ChatMessage.MSG_TYPE_TEXT,
             ChatMessage.MSG_TYPE_ITEM_CARD,
             ChatMessage.MSG_TYPE_IMAGE,
-            ChatMessage.MSG_TYPE_SYSTEM,
         ],
         default=ChatMessage.MSG_TYPE_TEXT,
     )

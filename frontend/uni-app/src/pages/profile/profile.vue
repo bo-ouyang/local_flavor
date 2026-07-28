@@ -78,7 +78,7 @@
           <text class="entry-arrow">›</text>
         </view>
         <button v-if="isAuthed" class="logout" @click="logout">退出登录</button>
-        <button v-else class="login" @click="goLogin">去登录</button>
+        <button v-else class="login" @click="goLogin()">去登录</button>
       </template>
     </view>
   </view>
