@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend / Python 3.12 / PostgreSQL / Redis
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: local_flavor_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d local_flavor_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DJANGO_ENV: dev
+      DJANGO_SECRET_KEY: ci-only-not-a-production-secret
+      DB_ENGINE: postgres
+      DB_NAME: local_flavor_ci
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      CACHE_BACKEND: redis
+      CACHE_REDIS_URL: redis://127.0.0.1:6379/0
+      CHAT_ENABLE_WS: "1"
+      CHAT_REDIS_URL: redis://127.0.0.1:6379/1
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/2
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      CELERY_TASK_ALWAYS_EAGER: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirementsdjango.txt
+
+      - name: Prepare backend logs
+        run: mkdir -p ci-logs/backend
+
+      - name: Install backend dependencies
+        run: python -m pip install --disable-pip-version-check -r requirementsdjango.txt 2>&1 | tee ci-logs/backend/install.log
+
+      - name: Run backend tests
+        working-directory: backend_django
+        run: python manage.py test -v 2 2>&1 | tee ../ci-logs/backend/tests.log
+
+      - name: Run Django system checks
+        working-directory: backend_django
+        run: python manage.py check 2>&1 | tee ../ci-logs/backend/check.log
+
+      - name: Check for missing migrations
+        working-directory: backend_django
+        run: python manage.py makemigrations --check --dry-run 2>&1 | tee ../ci-logs/backend/migrations.log
+
+      - name: Compile backend Python sources
+        working-directory: backend_django
+        run: python -m compileall -q . 2>&1 | tee ../ci-logs/backend/compileall.log
+
+      - name: Upload backend failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-failure-logs-${{ github.run_id }}
+          path: ci-logs/backend
+          if-no-files-found: warn
+          retention-days: 14
+
+  frontend:
+    name: Frontend / Node 22 / WeChat mini program
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: frontend/uni-app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/uni-app/package-lock.json
+
+      - name: Prepare frontend logs
+        run: mkdir -p ../../ci-logs/frontend
+
+      - name: Install frontend dependencies
+        run: npm ci 2>&1 | tee ../../ci-logs/frontend/install.log
+
+      - name: Run frontend type checks
+        run: npm run type-check 2>&1 | tee ../../ci-logs/frontend/type-check.log
+
+      - name: Build WeChat mini program
+        run: npm run build:mp-weixin 2>&1 | tee ../../ci-logs/frontend/build-mp-weixin.log
+
+      - name: Upload frontend failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-failure-logs-${{ github.run_id }}
+          path: ci-logs/frontend
+          if-no-files-found: warn
+          retention-days: 14
+
+  secret-scan:
+    name: Security / New secrets only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan secrets introduced by this change
+        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
+        with:
+          version: 3.96.0
+
+  dependency-audit:
+    name: Security / Python dependency gate and npm baseline
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirementsdjango.txt
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/uni-app/package-lock.json
+
+      - name: Install audit tools and frontend dependencies
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          npm ci --prefix frontend/uni-app
+          mkdir -p ci-reports
+
+      - name: Audit Python dependencies (blocking)
+        id: python-audit
+        run: pip-audit -r requirementsdjango.txt --format json --output ci-reports/python-audit.json
+
+      - name: Test npm audit baseline guard
+        if: always()
+        run: node --test .github/scripts/check-npm-audit-baseline.test.mjs
+
+      - name: Generate frontend dependency report
+        if: always()
+        id: npm-audit
+        continue-on-error: true
+        working-directory: frontend/uni-app
+        run: npm audit --json > ../../ci-reports/npm-audit.json
+
+      - name: Enforce frontend dependency baseline
+        if: always()
+        id: npm-baseline
+        run: node .github/scripts/check-npm-audit-baseline.mjs ci-reports/npm-audit.json
+
+      - name: Summarize dependency audit policy
+        if: always()
+        run: |
+          {
+            echo "## Dependency audit baseline"
+            echo
+            echo "Python audit outcome: ${{ steps.python-audit.outcome }}"
+            echo "npm audit outcome: ${{ steps.npm-audit.outcome }}"
+            echo "npm baseline outcome: ${{ steps.npm-baseline.outcome }}"
+            echo
+            echo "The Python audit is blocking because its BAS-02 baseline has no known vulnerabilities."
+            echo "The npm report may return a vulnerability exit code, but the baseline guard blocks any regression."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload dependency audit reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-audit-reports-${{ github.run_id }}
+          path: ci-reports
+          if-no-files-found: warn
+          retention-days: 30
