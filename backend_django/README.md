@@ -1,11 +1,13 @@
 # Django Backend (Rewrite)
 
 ## Quick Start
-Use a supported Python release (Python 3.12 is recommended for production).
+
+The backend runtime is Python 3.12 and Django 5.2 LTS. The repository's
+`.python-version` pins the Python minor release used by local tools and CI.
 
 1. Install dependencies:
 ```bash
-pip install -r ../requirementsdjango.txt
+python -m pip install --require-hashes -r ../requirements.lock
 ```
 2. Select environment profile (read from `env.dev` / `env.pro`):
 ```bash
@@ -75,3 +77,31 @@ python manage.py init_test_account
 python manage.py check
 python manage.py test
 ```
+
+## Dependency policy
+
+- `../requirements.in` contains 10 reviewed direct Django runtime dependencies. `celery[redis]` activates Celery's supported Redis transport, while the explicit `redis>=4.6,!=5.0.2,<6.5` range records the application's direct Django RedisCache dependency and the intersection of Channels Redis and Kombu constraints.
+- `../requirements.lock` pins 49 transitive packages and their distribution hashes for CI and production; the current lock uses Celery 5.6.3, Kombu 5.6.2, and redis-py 6.4.0.
+- `../requirements.txt` is the standard compatibility entry point and includes `requirements.lock`; it no longer contains the retired FastAPI stack.
+- Do not edit `requirements.lock` manually. Regenerate it from the repository root with uv 0.9.5:
+
+```bash
+uv pip compile requirements.in --python-version 3.12 --universal --generate-hashes --output-file requirements.lock
+```
+
+After regeneration, install the lock in a clean Python 3.12 environment and run
+`python -m pip check` plus the checks above.
+
+The transport checker can validate metadata and non-eager Celery configuration on a
+machine without Redis. Its test supplies isolated local URLs and does not connect:
+
+```bash
+python -m unittest discover -s .github/scripts -p 'test_check_celery_redis_transport.py' -v
+```
+
+CI additionally runs `check_celery_redis_transport.py --ping` against its disposable
+Redis 7 service. It only loads the broker/result transports and sends `PING`; it does
+not publish tasks or write keys.
+
+References: [Celery 5.6 Redis documentation](https://docs.celeryq.dev/en/stable/getting-started/backends-and-brokers/redis.html)
+and [Django 5.2 Redis cache documentation](https://docs.djangoproject.com/en/5.2/topics/cache/#redis).
