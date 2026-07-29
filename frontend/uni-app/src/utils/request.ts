@@ -94,7 +94,7 @@ const base = {
   put: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
     request<T>({ url, method: 'PUT', data, ...(opts || {}) }),
   patch: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'PATCH', data, ...(opts || {}) }),
+    request<T>({ url, method: 'PATCH' as any, data, ...(opts || {}) }),
   delete: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
     request<T>({ url, method: 'DELETE', data, ...(opts || {}) })
 }

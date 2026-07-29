@@ -18,6 +18,16 @@ from messaging.services import send_system_notice
 from items.tasks import sync_user_preference_task
 
 
+ALLOWED_STATUS_TRANSITIONS = {
+    ExchangeStatus.PENDING: {
+        ExchangeStatus.ACCEPTED,
+        ExchangeStatus.REJECTED,
+        ExchangeStatus.CANCELLED,
+    },
+    ExchangeStatus.ACCEPTED: {ExchangeStatus.COMPLETED},
+}
+
+
 def _is_first_completed_exchange(user_id: int) -> bool:
     return (
         ExchangeRequest.objects.filter(status=ExchangeStatus.COMPLETED)
@@ -103,31 +113,57 @@ class ExchangeStatusUpdateView(APIView):
         serializer = ExchangeStatusUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        exchange = ExchangeRequest.objects.filter(id=exchange_id).first()
-        if not exchange:
-            raise NotFound("Exchange request not found")
-        if user.id not in (exchange.requester_id, exchange.owner_id):
-            raise PermissionDenied("No permission to update this exchange request")
-
         target_status = serializer.validated_data["status"]
-        current_status = exchange.status
-        if current_status in (ExchangeStatus.REJECTED, ExchangeStatus.CANCELLED, ExchangeStatus.COMPLETED):
-            raise ValidationError({"detail": f"Cannot change status from {current_status}"})
+        requester_first_unlock = False
+        owner_first_unlock = False
+        item_title = ""
 
-        if target_status in (ExchangeStatus.ACCEPTED, ExchangeStatus.REJECTED) and user.id != exchange.owner_id:
-            raise PermissionDenied("Only item owner can accept or reject")
-        if target_status == ExchangeStatus.CANCELLED and user.id != exchange.requester_id:
-            raise PermissionDenied("Only requester can cancel")
-        if target_status == ExchangeStatus.COMPLETED and current_status != ExchangeStatus.ACCEPTED:
-            raise ValidationError({"detail": "Only accepted request can be completed"})
+        with transaction.atomic():
+            exchange = (
+                ExchangeRequest.objects.select_for_update()
+                .select_related("requested_item")
+                .filter(id=exchange_id)
+                .first()
+            )
+            if not exchange:
+                raise NotFound("Exchange request not found")
+            if user.id not in (exchange.requester_id, exchange.owner_id):
+                raise PermissionDenied("No permission to update this exchange request")
 
-        exchange.status = target_status
-        exchange.save(update_fields=["status", "updated_at"])
+            current_status = exchange.status
+            allowed_targets = ALLOWED_STATUS_TRANSITIONS.get(current_status, set())
+            if target_status not in allowed_targets:
+                raise ValidationError(
+                    {
+                        "detail": (
+                            f"Cannot change status from {current_status} "
+                            f"to {target_status}"
+                        )
+                    }
+                )
+
+            if (
+                target_status in (ExchangeStatus.ACCEPTED, ExchangeStatus.REJECTED)
+                and user.id != exchange.owner_id
+            ):
+                raise PermissionDenied("Only item owner can accept or reject")
+            if (
+                target_status == ExchangeStatus.CANCELLED
+                and user.id != exchange.requester_id
+            ):
+                raise PermissionDenied("Only requester can cancel")
+
+            exchange.status = target_status
+            exchange.save(update_fields=["status", "updated_at"])
+
+            if target_status == ExchangeStatus.COMPLETED:
+                requester_first_unlock = _is_first_completed_exchange(
+                    exchange.requester_id
+                )
+                owner_first_unlock = _is_first_completed_exchange(exchange.owner_id)
+                item_title = exchange.requested_item.title
 
         if target_status == ExchangeStatus.COMPLETED:
-            requester_first_unlock = _is_first_completed_exchange(exchange.requester_id)
-            owner_first_unlock = _is_first_completed_exchange(exchange.owner_id)
-            item_title = exchange.requested_item.title
             if requester_first_unlock:
                 send_system_notice(
                     exchange.requester_id,
@@ -140,7 +176,7 @@ class ExchangeStatusUpdateView(APIView):
                     f"你已完成第一笔特产交换，社区发布权限已解锁。现在可以围绕「{item_title}」发布交流动态了。",
                     exchange.requested_item_id,
                 )
-            
+
             # Recalculate recommendation preferences for both parties
             sync_user_preference_task.delay(exchange.requester_id)
             if exchange.requester_id != exchange.owner_id:

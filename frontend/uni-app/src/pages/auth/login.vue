@@ -12,13 +12,13 @@
       </view>
 
       <view v-if="mode === 'wechat'" class="wechat-area">
-        <button type="primary" class="btn" :loading="loading" @click="loginWechat">微信一键登录</button>
+        <button :type="('primary' as any)" class="btn" :loading="loading" @click="loginWechat">微信一键登录</button>
       </view>
 
       <view v-else class="phone-area">
         <input v-model="phone" class="input" type="number" maxlength="11" placeholder="请输入手机号" />
         <input v-model="password" class="input" password placeholder="请输入密码" />
-        <button type="primary" class="btn" :loading="loading" @click="loginPhone">手机号登录</button>
+        <button :type="('primary' as any)" class="btn" :loading="loading" @click="loginPhone">手机号登录</button>
 
         <view class="demo-box">
           <text class="demo-title">测试账号（点击自动填充）</text>

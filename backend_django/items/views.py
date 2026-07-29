@@ -1,8 +1,6 @@
-from collections import OrderedDict
-
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -93,6 +91,48 @@ class ItemListCreateView(APIView):
             cache_set(cache_key, data, timeout=settings.CACHE_TTL_ITEMS_LIST)
         return api_success(data=data)
 
+    def post(self, request):
+        user = get_current_user(request, required=True)
+        serializer = ItemCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        validated = dict(serializer.validated_data)
+        initial_tags = validated.pop("initial_tags", [])
+
+        if not user.region_code or not user.province or not user.city:
+            raise ValidationError({"detail": "Please set your region before publishing"})
+
+        # Publishing region is always bound to current user region.
+        validated["region_code"] = user.region_code
+        validated["province"] = user.province
+        validated["city"] = user.city
+
+        with transaction.atomic():
+            item = Item.objects.create(user=user, **validated)
+            seen = set()
+            for tag_name in initial_tags:
+                clean_name = tag_name.strip()
+                if not clean_name or clean_name in seen:
+                    continue
+                seen.add(clean_name)
+                FlavorTag.objects.create(item=item, tag_name=clean_name, vote_count=1)
+
+        audit_item.delay(item.id)
+        item = (
+            Item.objects.select_related("user")
+            .prefetch_related("flavor_tags")
+            .filter(id=item.id)
+            .first()
+        )
+        bump_namespace_version("items")
+        bump_namespace_version("item_detail")
+        return api_success(
+            data=ItemReadSerializer(item).data,
+            message="item created, awaiting audit",
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
 class ItemRecommendedView(APIView):
     def get(self, request):
         user = get_current_user(request, required=True)
@@ -170,47 +210,6 @@ class ItemRecommendedView(APIView):
 
         cache_set(cache_key, serialized_data, timeout=settings.CACHE_TTL_ITEMS_LIST)
         return api_success(data=serialized_data)
-
-    def post(self, request):
-        user = get_current_user(request, required=True)
-        serializer = ItemCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        validated = dict(serializer.validated_data)
-        initial_tags = validated.pop("initial_tags", [])
-
-        if not user.region_code or not user.province or not user.city:
-            raise ValidationError({"detail": "Please set your region before publishing"})
-
-        # Publishing region is always bound to current user region.
-        validated["region_code"] = user.region_code
-        validated["province"] = user.province
-        validated["city"] = user.city
-
-        with transaction.atomic():
-            item = Item.objects.create(user=user, **validated)
-            seen = set()
-            for tag_name in initial_tags:
-                clean_name = tag_name.strip()
-                if not clean_name or clean_name in seen:
-                    continue
-                seen.add(clean_name)
-                FlavorTag.objects.create(item=item, tag_name=clean_name, vote_count=1)
-
-        audit_item.delay(item.id)
-        item = (
-            Item.objects.select_related("user")
-            .prefetch_related("flavor_tags")
-            .filter(id=item.id)
-            .first()
-        )
-        bump_namespace_version("items")
-        bump_namespace_version("item_detail")
-        return api_success(
-            data=ItemReadSerializer(item).data,
-            message="item created, awaiting audit",
-            status_code=status.HTTP_201_CREATED,
-        )
 
 
 class ItemTodayByRegionView(APIView):

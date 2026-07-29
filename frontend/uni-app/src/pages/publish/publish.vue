@@ -220,7 +220,10 @@ const chooseImage = () => {
     sizeType: ['compressed'],
     sourceType: ['album', 'camera'],
     success: async (res) => {
-      await uploadImages(res.tempFilePaths || [])
+      const paths = Array.isArray(res.tempFilePaths)
+        ? res.tempFilePaths
+        : (res.tempFilePaths ? [res.tempFilePaths] : [])
+      await uploadImages(paths)
     }
   })
 }

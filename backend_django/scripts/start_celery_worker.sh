@@ -11,7 +11,7 @@ export DJANGO_ENV="${DJANGO_ENV:-pro}"
 if [ -n "${VIRTUAL_ENV:-}" ]; then
   CELERY_BIN="${VIRTUAL_ENV}/bin/celery"
 else
-  CELERY_BIN="${PROJECT_DIR}/venv/bin/celery"
+  CELERY_BIN="${PROJECT_DIR}/../venv/bin/celery"
 fi
 
 if [ ! -x "${CELERY_BIN}" ]; then
