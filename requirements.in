@@ -1,0 +1,18 @@
+# Direct runtime dependencies for the Django backend.
+#
+# Regenerate the transitive lock with uv 0.9.5:
+# uv pip compile requirements.in --python-version 3.12 --universal --generate-hashes --output-file requirements.lock
+
+django>=5.2,<5.3
+djangorestframework>=3.15,<4.0
+daphne>=4.1,<5.0
+gunicorn>=22,<24
+
+psycopg[binary]>=3.2,<4.0
+Pillow>=10.4,<13.0
+channels>=4.1,<5.0
+channels-redis>=4.2,<5.0
+# Django RedisCache uses redis-py directly. This range is the intersection of
+# channels-redis (>=4.6) and Kombu's Redis transport (<6.5, excluding 5.0.2).
+redis>=4.6,!=5.0.2,<6.5
+celery[redis]>=5.4,<6.0
