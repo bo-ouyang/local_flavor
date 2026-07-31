@@ -1,6 +1,12 @@
 {
   "name": "local-flavor-uniapp",
   "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": "22.23.2",
+    "npm": "10.9.8"
+  },
+  "packageManager": "npm@10.9.8",
   "scripts": {
     "dev:app": "uni -p app",
     "dev:app-android": "uni -p app-android",
@@ -37,36 +43,34 @@
     "type-check": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "@dcloudio/uni-app": "3.0.0-3090820231124001",
-    "@dcloudio/uni-app-plus": "3.0.0-3090820231124001",
-    "@dcloudio/uni-components": "3.0.0-3090820231124001",
-    "@dcloudio/uni-h5": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-alipay": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-baidu": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-kuaishou": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-lark": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-qq": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-toutiao": "3.0.0-3090820231124001",
-    "@dcloudio/uni-mp-weixin": "3.0.0-3090820231124001",
-    "@dcloudio/uni-quickapp-webview": "3.0.0-3090820231124001",
+    "@dcloudio/uni-app": "3.0.0-5010520260709002",
+    "@dcloudio/uni-app-plus": "3.0.0-5010520260709002",
+    "@dcloudio/uni-components": "3.0.0-5010520260709002",
+    "@dcloudio/uni-h5": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-alipay": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-baidu": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-kuaishou": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-lark": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-qq": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-toutiao": "3.0.0-5010520260709002",
+    "@dcloudio/uni-mp-weixin": "3.0.0-5010520260709002",
+    "@dcloudio/uni-quickapp-webview": "3.0.0-5010520260709002",
     "echarts": "^6.0.0",
     "pinia": "2.0.36",
-    "vue": "^3.3.11",
-    "vue-i18n": "^9.8.0"
+    "vue": "3.4.21"
   },
   "devDependencies": {
-    "@dcloudio/types": "^3.4.3",
-    "@dcloudio/uni-automator": "3.0.0-3090820231124001",
-    "@dcloudio/uni-cli-shared": "3.0.0-3090820231124001",
-    "@dcloudio/uni-stacktracey": "3.0.0-3090820231124001",
-    "@dcloudio/vite-plugin-uni": "3.0.0-3090820231124001",
+    "@dcloudio/types": "3.4.31",
+    "@dcloudio/uni-cli-shared": "3.0.0-5010520260709002",
+    "@dcloudio/uni-stacktracey": "3.0.0-5010520260709002",
+    "@dcloudio/vite-plugin-uni": "3.0.0-5010520260709002",
     "@rushstack/eslint-patch": "^1.6.0",
     "@types/node": "^18.19.2",
-    "@vitejs/plugin-vue": "^4.2.3",
+    "@vitejs/plugin-vue": "5.2.4",
     "@vue/tsconfig": "^0.5.0",
     "sass": "^1.69.5",
     "typescript": "5.4.5",
-    "vite": "^4.5.3",
-    "vue-tsc": "^1.8.25"
+    "vite": "5.2.8",
+    "vue-tsc": "3.3.8"
   }
 }
