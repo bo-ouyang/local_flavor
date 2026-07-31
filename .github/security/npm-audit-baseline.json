@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-07-30",
+  "dcloudRelease": "3.0.0-5010520260709002",
+  "packageLock": {
+    "path": "frontend/uni-app/package-lock.json",
+    "sha256": "b092762a6cf6c64803ec22c4be6268a64ab7a6d98d389f750e71655d8b0befae"
+  },
+  "vulnerabilities": {
+    "info": 0,
+    "low": 20,
+    "moderate": 16,
+    "high": 13,
+    "critical": 0,
+    "total": 49
+  }
+}

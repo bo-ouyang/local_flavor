@@ -1,17 +1,17 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-export const NPM_AUDIT_BASELINE = Object.freeze({
-  info: 0,
-  low: 11,
-  moderate: 17,
-  high: 42,
-  critical: 0,
-});
-
-const SEVERITIES = Object.keys(NPM_AUDIT_BASELINE);
-const EXPECTED_KEYS = new Set([...SEVERITIES, "total"]);
+const SEVERITIES = Object.freeze(["info", "low", "moderate", "high", "critical"]);
+const EXPECTED_COUNT_KEYS = new Set([...SEVERITIES, "total"]);
+const EXPECTED_MANIFEST_KEYS = new Set([
+  "schemaVersion",
+  "createdAt",
+  "dcloudRelease",
+  "packageLock",
+  "vulnerabilities",
+]);
 
 function requireObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -20,43 +20,119 @@ function requireObject(value, label) {
   return value;
 }
 
-export function checkNpmAuditBaseline(report) {
+function requireExactKeys(value, expectedKeys, label) {
+  for (const key of expectedKeys) {
+    if (!Object.hasOwn(value, key)) {
+      throw new Error(`${label}.${key} is missing`);
+    }
+  }
+  for (const key of Object.keys(value)) {
+    if (!expectedKeys.has(key)) {
+      throw new Error(`${label}.${key} is unexpected`);
+    }
+  }
+}
+
+function validateCounts(value, label) {
+  const counts = requireObject(value, label);
+  requireExactKeys(counts, EXPECTED_COUNT_KEYS, label);
+
+  for (const key of EXPECTED_COUNT_KEYS) {
+    if (!Number.isSafeInteger(counts[key]) || counts[key] < 0) {
+      throw new Error(`${label}.${key} must be a non-negative integer`);
+    }
+  }
+
+  const calculatedTotal = SEVERITIES.reduce(
+    (sum, severity) => sum + counts[severity],
+    0,
+  );
+  if (counts.total !== calculatedTotal) {
+    throw new Error(`${label}.total is ${counts.total}, expected ${calculatedTotal}`);
+  }
+  return counts;
+}
+
+function validateManifest(value) {
+  const manifest = requireObject(value, "baseline manifest");
+  requireExactKeys(manifest, EXPECTED_MANIFEST_KEYS, "baseline manifest");
+
+  if (manifest.schemaVersion !== 1) {
+    throw new Error("baseline manifest.schemaVersion must be 1");
+  }
+  if (
+    typeof manifest.createdAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(manifest.createdAt) ||
+    Number.isNaN(Date.parse(`${manifest.createdAt}T00:00:00Z`))
+  ) {
+    throw new Error("baseline manifest.createdAt must be an ISO date");
+  }
+  if (
+    typeof manifest.dcloudRelease !== "string" ||
+    !/^3\.0\.0-\d+$/.test(manifest.dcloudRelease)
+  ) {
+    throw new Error("baseline manifest.dcloudRelease is invalid");
+  }
+
+  const packageLock = requireObject(
+    manifest.packageLock,
+    "baseline manifest.packageLock",
+  );
+  requireExactKeys(
+    packageLock,
+    new Set(["path", "sha256"]),
+    "baseline manifest.packageLock",
+  );
+  if (typeof packageLock.path !== "string" || packageLock.path.length === 0) {
+    throw new Error("baseline manifest.packageLock.path must be a non-empty string");
+  }
+  if (
+    typeof packageLock.sha256 !== "string" ||
+    !/^[a-f\d]{64}$/i.test(packageLock.sha256)
+  ) {
+    throw new Error("baseline manifest.packageLock.sha256 must be a SHA-256 digest");
+  }
+
+  const vulnerabilities = validateCounts(
+    manifest.vulnerabilities,
+    "baseline manifest.vulnerabilities",
+  );
+  if (vulnerabilities.critical !== 0) {
+    throw new Error("baseline manifest must not allow critical vulnerabilities");
+  }
+  return manifest;
+}
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+export function checkNpmAuditBaseline(report, baselineManifest, lockContents) {
   const root = requireObject(report, "npm audit report");
   const metadata = requireObject(root.metadata, "metadata");
-  const counts = requireObject(metadata.vulnerabilities, "metadata.vulnerabilities");
-  const keys = Object.keys(counts);
+  const counts = validateCounts(
+    metadata.vulnerabilities,
+    "metadata.vulnerabilities",
+  );
+  const manifest = validateManifest(baselineManifest);
 
-  for (const key of EXPECTED_KEYS) {
-    if (!Object.hasOwn(counts, key)) {
-      throw new Error(`metadata.vulnerabilities.${key} is missing`);
-    }
-  }
-  for (const key of keys) {
-    if (!EXPECTED_KEYS.has(key)) {
-      throw new Error(`metadata.vulnerabilities.${key} is unexpected`);
-    }
-  }
-  for (const key of EXPECTED_KEYS) {
-    if (!Number.isSafeInteger(counts[key]) || counts[key] < 0) {
-      throw new Error(`metadata.vulnerabilities.${key} must be a non-negative integer`);
-    }
-  }
-
-  const calculatedTotal = SEVERITIES.reduce((sum, severity) => sum + counts[severity], 0);
-  if (counts.total !== calculatedTotal) {
+  const actualLockHash = sha256(lockContents);
+  if (actualLockHash !== manifest.packageLock.sha256.toLowerCase()) {
     throw new Error(
-      `metadata.vulnerabilities.total is ${counts.total}, expected ${calculatedTotal}`,
+      `package-lock SHA-256 mismatch: expected ${manifest.packageLock.sha256}, ` +
+        `got ${actualLockHash}`,
     );
   }
 
+  const baseline = manifest.vulnerabilities;
   const regressions = SEVERITIES.filter(
-    (severity) => counts[severity] > NPM_AUDIT_BASELINE[severity],
+    (severity) => counts[severity] > baseline[severity],
   );
   if (counts.critical > 0 || regressions.length > 0) {
     const details = regressions
       .map(
         (severity) =>
-          `${severity}=${counts[severity]} (baseline ${NPM_AUDIT_BASELINE[severity]})`,
+          `${severity}=${counts[severity]} (baseline ${baseline[severity]})`,
       )
       .join(", ");
     throw new Error(`npm audit baseline regressed: ${details}`);
@@ -65,15 +141,15 @@ export function checkNpmAuditBaseline(report) {
   return counts;
 }
 
-function readReport(reportPath) {
-  if (!reportPath) {
-    throw new Error("usage: node check-npm-audit-baseline.mjs <npm-audit.json>");
+function readJson(filePath, label) {
+  if (!filePath) {
+    throw new Error(`${label} path is required`);
   }
-  const raw = readFileSync(reportPath, "utf8");
+  const raw = readFileSync(filePath, "utf8");
   try {
     return JSON.parse(raw);
   } catch (error) {
-    throw new Error(`npm audit report is not valid JSON: ${error.message}`);
+    throw new Error(`${label} is not valid JSON: ${error.message}`);
   }
 }
 
@@ -82,7 +158,18 @@ const isCommandLine =
 
 if (isCommandLine) {
   try {
-    const counts = checkNpmAuditBaseline(readReport(process.argv[2]));
+    const [, , reportPath, manifestPath, lockPath] = process.argv;
+    if (!reportPath || !manifestPath || !lockPath) {
+      throw new Error(
+        "usage: node check-npm-audit-baseline.mjs " +
+          "<npm-audit.json> <baseline.json> <package-lock.json>",
+      );
+    }
+    const counts = checkNpmAuditBaseline(
+      readJson(reportPath, "npm audit report"),
+      readJson(manifestPath, "baseline manifest"),
+      readFileSync(lockPath),
+    );
     console.log(
       `npm audit baseline passed: low=${counts.low}, moderate=${counts.moderate}, ` +
         `high=${counts.high}, critical=${counts.critical}`,
