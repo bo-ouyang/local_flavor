@@ -3,23 +3,65 @@ from datetime import timedelta
 from django.contrib.auth.hashers import check_password
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
-from core.auth import get_current_user
-from core.auth import issue_token
+from core.auth import (
+    create_auth_session,
+    get_current_user,
+    issue_token,
+    legacy_tokens_allowed,
+    refresh_auth_session,
+)
 from core.geolocation import reverse_geocode
 from core.responses import api_success
 from core.throttles import LoginRateThrottle
 from core.wechat import code2session
-from users.models import LocalUser, Region
+from users.models import AuthSession, LocalUser, Region
 from users.serializers import (
+    AuthSessionReadSerializer,
     LocalUserReadSerializer,
     PhoneLoginSerializer,
+    RefreshSessionSerializer,
     UserRegionUpdateSerializer,
     WechatLoginSerializer,
 )
 from items.tasks import sync_user_preference_task
+
+
+def _session_credential_payload(credentials):
+    return {
+        "access_token": credentials.access_token,
+        "refresh_token": credentials.refresh_token,
+        "token_type": "bearer",
+        "expires_in": credentials.expires_in,
+        "access_expires_at": credentials.access_expires_at,
+        "refresh_expires_at": credentials.refresh_expires_at,
+        "session_id": credentials.session.id,
+    }
+
+
+def _login_credential_payload(credentials, user):
+    data = {
+        "token_type": "bearer",
+        "user": LocalUserReadSerializer(user).data,
+        "session": _session_credential_payload(credentials),
+    }
+    if legacy_tokens_allowed(timezone.now()):
+        legacy_token = issue_token(user.openid)
+        # AUTH-01A migration bridge: the current frontend reads access_token.
+        data["access_token"] = legacy_token
+        data["token"] = legacy_token
+    return data
+
+
+def _current_auth_session(request) -> AuthSession:
+    session = request.auth if isinstance(request.auth, AuthSession) else None
+    if session is None:
+        raise PermissionDenied(
+            "Legacy credentials cannot manage sessions; sign in again first"
+        )
+    return session
 
 
 def _resolve_region_code(province: str, city: str, fallback: str = "") -> str:
@@ -85,12 +127,11 @@ class WechatLoginView(APIView):
             if changed:
                 user.save()
 
-        token = issue_token(openid)
-        data = {
-            "access_token": token,
-            "token_type": "bearer",
-            "user": LocalUserReadSerializer(user).data,
-        }
+        credentials = create_auth_session(
+            user,
+            device_label=serializer.validated_data.get("device_label", ""),
+        )
+        data = _login_credential_payload(credentials, user)
         return api_success(data=data, message="login success", status_code=status.HTTP_200_OK)
 
 
@@ -112,12 +153,11 @@ class PhoneLoginView(APIView):
         if not check_password(password, user.password_hash):
             raise ValidationError({"detail": "invalid phone or password"})
 
-        token = issue_token(user.openid)
-        data = {
-            "access_token": token,
-            "token_type": "bearer",
-            "user": LocalUserReadSerializer(user).data,
-        }
+        credentials = create_auth_session(
+            user,
+            device_label=serializer.validated_data.get("device_label", ""),
+        )
+        data = _login_credential_payload(credentials, user)
         return api_success(data=data, message="login success", status_code=status.HTTP_200_OK)
 
 
@@ -173,3 +213,76 @@ class RegionUpdateView(APIView):
         sync_user_preference_task.delay(user.id)
 
         return api_success(data=LocalUserReadSerializer(user).data, message="region updated")
+
+
+class SessionRefreshView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = [LoginRateThrottle]
+
+    def post(self, request):
+        serializer = RefreshSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        credentials = refresh_auth_session(serializer.validated_data["refresh_token"])
+        return api_success(
+            data=_session_credential_payload(credentials),
+            message="session refreshed",
+        )
+
+
+class SessionLogoutView(APIView):
+    def post(self, request):
+        user = get_current_user(request, required=True)
+        session = _current_auth_session(request)
+        now = timezone.now()
+        AuthSession.objects.filter(
+            id=session.id,
+            user_id=user.id,
+            revoked_at__isnull=True,
+        ).update(revoked_at=now, updated_at=now)
+        return api_success(data={"session_id": session.id}, message="logout success")
+
+
+class SessionListView(APIView):
+    def get(self, request):
+        user = get_current_user(request, required=True)
+        current_session = _current_auth_session(request)
+        sessions = AuthSession.objects.filter(user_id=user.id).order_by("-created_at")
+        return api_success(
+            data=AuthSessionReadSerializer(
+                sessions,
+                many=True,
+                context={
+                    "current_session_id": current_session.id
+                },
+            ).data
+        )
+
+
+class SessionRevokeView(APIView):
+    def post(self, request, session_id: int):
+        user = get_current_user(request, required=True)
+        _current_auth_session(request)
+        session = AuthSession.objects.filter(id=session_id, user_id=user.id).first()
+        if session is None:
+            raise NotFound("Session not found")
+        if session.revoked_at is None:
+            session.revoked_at = timezone.now()
+            session.save(update_fields=["revoked_at", "updated_at"])
+        return api_success(data={"session_id": session.id}, message="session revoked")
+
+
+class SessionRevokeOthersView(APIView):
+    def post(self, request):
+        user = get_current_user(request, required=True)
+        current_session = _current_auth_session(request)
+        now = timezone.now()
+        revoked_count = (
+            AuthSession.objects.filter(user_id=user.id, revoked_at__isnull=True)
+            .exclude(id=current_session.id)
+            .update(revoked_at=now, updated_at=now)
+        )
+        return api_success(
+            data={"revoked_count": revoked_count},
+            message="other sessions revoked",
+        )

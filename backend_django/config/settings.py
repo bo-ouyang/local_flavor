@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,23 +9,72 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_env_file(file_path: Path) -> None:
+def _load_env_file(
+    file_path: Path,
+    *,
+    required: bool = False,
+    strict: bool = False,
+) -> None:
     if not file_path.exists():
+        if required:
+            raise RuntimeError(f"Explicit DJANGO_ENV_FILE does not exist: {file_path}")
         return
-    for line in file_path.read_text(encoding="utf-8").splitlines():
+    if not file_path.is_file():
+        raise RuntimeError(f"DJANGO_ENV_FILE must be a regular file: {file_path}")
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read DJANGO_ENV_FILE: {file_path}") from exc
+    for line_number, line in enumerate(lines, start=1):
         row = line.strip()
-        if not row or row.startswith("#") or "=" not in row:
+        if not row or row.startswith("#"):
+            continue
+        if "=" not in row:
+            if strict:
+                raise RuntimeError(
+                    f"Invalid env row at {file_path}:{line_number}"
+                )
             continue
         key, value = row.split("=", 1)
         key = key.strip()
+        if strict and not key:
+            raise RuntimeError(f"Empty env key at {file_path}:{line_number}")
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
 
 
-DJANGO_ENV = os.getenv("DJANGO_ENV", "dev").lower()
-if DJANGO_ENV not in {"dev", "pro"}:
-    DJANGO_ENV = "dev"
-_load_env_file(BASE_DIR / f"env.{DJANGO_ENV}")
+_django_env_aliases = {"prod": "pro", "production": "pro"}
+
+
+def _parse_django_env(raw_value: str) -> str:
+    raw = (raw_value or "").strip().lower()
+    normalized = _django_env_aliases.get(raw, raw)
+    if normalized not in {"dev", "pro"}:
+        raise RuntimeError(f"Unsupported DJANGO_ENV: {raw}")
+    return normalized
+
+
+_django_env_process_value = os.getenv("DJANGO_ENV")
+_initial_django_env = _parse_django_env(_django_env_process_value or "dev")
+_explicit_env_file = os.getenv("DJANGO_ENV_FILE")
+_load_env_file_raw = os.getenv("DJANGO_LOAD_ENV_FILE", "1")
+if _load_env_file_raw not in {"0", "1"}:
+    raise RuntimeError("DJANGO_LOAD_ENV_FILE must be exactly 0 or 1")
+if _load_env_file_raw == "1":
+    _env_file = Path(
+        _explicit_env_file or str(BASE_DIR / f"env.{_initial_django_env}")
+    )
+    _load_env_file(
+        _env_file,
+        required=bool(_explicit_env_file),
+        strict=bool(_explicit_env_file),
+    )
+DJANGO_ENV = _parse_django_env(os.getenv("DJANGO_ENV", _initial_django_env))
+if not _explicit_env_file and DJANGO_ENV != _initial_django_env:
+    raise RuntimeError(
+        "A default env file cannot switch DJANGO_ENV; use an explicit "
+        "DJANGO_ENV_FILE or set DJANGO_ENV in the process environment"
+    )
 
 _secret_key = os.getenv("DJANGO_SECRET_KEY", "")
 if not _secret_key:
@@ -143,6 +193,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "core.auth.OpaqueSessionAuthentication",
+    ],
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
@@ -163,7 +216,79 @@ REST_FRAMEWORK = {
     },
 }
 
-AUTH_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", str(30 * 24 * 3600)))
+def _positive_decimal_env(name: str, default: str) -> int:
+    raw = os.getenv(name, default)
+    if not raw or any(char not in "0123456789" for char in raw):
+        raise RuntimeError(f"{name} must be a positive decimal integer")
+    value = int(raw)
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than zero")
+    return value
+
+
+def _binary_env(name: str, raw_value, default: str) -> bool:
+    value = raw_value if raw_value is not None else default
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{name} must be exactly 0 or 1")
+    return value == "1"
+
+
+AUTH_TOKEN_TTL_SECONDS = _positive_decimal_env(
+    "AUTH_TOKEN_TTL_SECONDS", str(30 * 24 * 3600)
+)
+AUTH_ACCESS_TOKEN_TTL_SECONDS = _positive_decimal_env(
+    "AUTH_ACCESS_TOKEN_TTL_SECONDS", "900"
+)
+AUTH_REFRESH_TOKEN_TTL_SECONDS = _positive_decimal_env(
+    "AUTH_REFRESH_TOKEN_TTL_SECONDS", str(30 * 24 * 3600)
+)
+AUTH_SESSION_LAST_SEEN_INTERVAL_SECONDS = _positive_decimal_env(
+    "AUTH_SESSION_LAST_SEEN_INTERVAL_SECONDS", "300"
+)
+AUTH_LEGACY_MAX_WINDOW_SECONDS = _positive_decimal_env(
+    "AUTH_LEGACY_MAX_WINDOW_SECONDS", str(90 * 24 * 3600)
+)
+if AUTH_LEGACY_MAX_WINDOW_SECONDS > 90 * 24 * 3600:
+    raise RuntimeError("AUTH_LEGACY_MAX_WINDOW_SECONDS cannot exceed 90 days")
+_legacy_enabled_raw = os.getenv("AUTH_LEGACY_TOKEN_ENABLED")
+_ws_query_enabled_raw = os.getenv("AUTH_WS_QUERY_TOKEN_ENABLED")
+if DJANGO_ENV == "pro" and (
+    _legacy_enabled_raw is None or _ws_query_enabled_raw is None
+):
+    raise RuntimeError(
+        "AUTH_LEGACY_TOKEN_ENABLED and AUTH_WS_QUERY_TOKEN_ENABLED "
+        "must both be explicitly set in production"
+    )
+AUTH_LEGACY_TOKEN_ENABLED = _binary_env(
+    "AUTH_LEGACY_TOKEN_ENABLED", _legacy_enabled_raw, "1"
+)
+AUTH_LEGACY_TOKEN_ACCEPT_UNTIL = os.getenv("AUTH_LEGACY_TOKEN_ACCEPT_UNTIL", "")
+AUTH_WS_QUERY_TOKEN_ENABLED = _binary_env(
+    "AUTH_WS_QUERY_TOKEN_ENABLED", _ws_query_enabled_raw, "1"
+)
+
+if DJANGO_ENV == "pro" and (AUTH_LEGACY_TOKEN_ENABLED or AUTH_WS_QUERY_TOKEN_ENABLED):
+    if AUTH_WS_QUERY_TOKEN_ENABLED and not AUTH_LEGACY_TOKEN_ENABLED:
+        raise RuntimeError(
+            "AUTH_WS_QUERY_TOKEN_ENABLED requires AUTH_LEGACY_TOKEN_ENABLED in production"
+        )
+    try:
+        _legacy_cutoff = datetime.fromisoformat(
+            AUTH_LEGACY_TOKEN_ACCEPT_UNTIL.replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "AUTH_LEGACY_TOKEN_ACCEPT_UNTIL must be an aware UTC ISO-8601 timestamp"
+        ) from exc
+    if _legacy_cutoff.tzinfo is None or _legacy_cutoff.utcoffset() != timedelta(0):
+        raise RuntimeError("AUTH_LEGACY_TOKEN_ACCEPT_UNTIL must use UTC")
+    _legacy_now = datetime.now(timezone.utc)
+    if _legacy_cutoff <= _legacy_now:
+        raise RuntimeError("AUTH_LEGACY_TOKEN_ACCEPT_UNTIL must be in the future")
+    if _legacy_cutoff > _legacy_now + timedelta(
+        seconds=AUTH_LEGACY_MAX_WINDOW_SECONDS
+    ):
+        raise RuntimeError("legacy authentication migration window exceeds configured maximum")
 
 WECHAT_APPID = os.getenv("WECHAT_APPID", "")
 WECHAT_SECRET = os.getenv("WECHAT_SECRET", "")

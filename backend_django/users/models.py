@@ -25,6 +25,62 @@ class LocalUser(models.Model):
             models.Index(fields=["created_at"]),
         ]
 
+    @property
+    def is_authenticated(self):
+        """Allow LocalUser to participate in DRF authentication and throttling."""
+        return True
+
+    @property
+    def is_anonymous(self):
+        return False
+
+
+class AuthSession(models.Model):
+    user = models.ForeignKey(
+        LocalUser,
+        on_delete=models.CASCADE,
+        related_name="auth_sessions",
+    )
+    access_token_hash = models.CharField(max_length=64, unique=True)
+    access_expires_at = models.DateTimeField(db_index=True)
+    refresh_expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    device_label = models.CharField(max_length=120, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "auth_sessions"
+        indexes = [
+            models.Index(fields=["user", "revoked_at", "-created_at"]),
+        ]
+
+
+class AuthRefreshToken(models.Model):
+    session = models.ForeignKey(
+        AuthSession,
+        on_delete=models.CASCADE,
+        related_name="refresh_credentials",
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    successor = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="predecessor",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "auth_refresh_tokens"
+        indexes = [
+            models.Index(fields=["session", "used_at", "-created_at"]),
+        ]
+
 
 class Region(models.Model):
     code = models.CharField(max_length=20, unique=True, db_index=True)

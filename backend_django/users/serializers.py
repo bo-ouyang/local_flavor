@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from users.models import LocalUser
+from users.models import AuthSession, LocalUser
 
 
 class LocalUserReadSerializer(serializers.ModelSerializer):
@@ -47,8 +47,34 @@ class WechatLoginSerializer(serializers.Serializer):
     region_code = serializers.CharField(required=False, allow_blank=True, max_length=20)
     latitude = serializers.FloatField(required=False, min_value=-90, max_value=90)
     longitude = serializers.FloatField(required=False, min_value=-180, max_value=180)
+    device_label = serializers.CharField(required=False, allow_blank=True, max_length=120)
 
 
 class PhoneLoginSerializer(serializers.Serializer):
     phone = serializers.RegexField(regex=r"^1\d{10}$", max_length=20)
     password = serializers.CharField(min_length=6, max_length=64)
+    device_label = serializers.CharField(required=False, allow_blank=True, max_length=120)
+
+
+class RefreshSessionSerializer(serializers.Serializer):
+    refresh_token = serializers.CharField(min_length=16, max_length=512, write_only=True)
+
+
+class AuthSessionReadSerializer(serializers.ModelSerializer):
+    current = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AuthSession
+        fields = [
+            "id",
+            "device_label",
+            "created_at",
+            "last_seen_at",
+            "access_expires_at",
+            "refresh_expires_at",
+            "revoked_at",
+            "current",
+        ]
+
+    def get_current(self, obj):
+        return obj.id == self.context.get("current_session_id")
