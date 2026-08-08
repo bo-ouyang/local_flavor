@@ -28,3 +28,4 @@ env.dev
 env.pro
 *.swp
 *.swo
+.worktrees/
