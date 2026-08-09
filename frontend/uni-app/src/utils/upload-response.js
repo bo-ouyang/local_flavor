@@ -10,14 +10,30 @@ export const parseUploadResponse = (response) => {
   return url
 }
 
-export const resolveUploadUrl = (apiBase, uploadUrl) => {
+const getBrowserOrigin = () => {
+  try {
+    return typeof globalThis.location?.origin === 'string' ? globalThis.location.origin : ''
+  } catch (_) {
+    return ''
+  }
+}
+
+const parseHttpUrl = (value) => {
+  const url = new URL(value)
+  if (!/^https?:$/.test(url.protocol)) throw new Error('invalid URL')
+  return url
+}
+
+export const resolveUploadUrl = (apiBase, uploadUrl, browserOrigin) => {
   let apiUrl
   try {
-    apiUrl = new URL(apiBase)
+    const isRootRelative = typeof apiBase === 'string' && /^\/(?!\/)/.test(apiBase)
+    apiUrl = isRootRelative
+      ? new URL(apiBase, parseHttpUrl(browserOrigin === undefined ? getBrowserOrigin() : browserOrigin))
+      : parseHttpUrl(apiBase)
   } catch (_) {
-    throw new Error('invalid API base')
+    throw new Error(typeof apiBase === 'string' && /^\/(?!\/)/.test(apiBase) ? 'upload failed' : 'invalid API base')
   }
-  if (!/^https?:$/.test(apiUrl.protocol)) throw new Error('invalid API base')
   const resolved = new URL(uploadUrl, `${apiUrl.origin}/`)
   if (resolved.origin !== apiUrl.origin || !resolved.pathname.startsWith('/static/')) {
     throw new Error('invalid upload URL')

@@ -73,8 +73,9 @@ may include its refresh token in that request body, but the current server autho
 from the Bearer session and does not use the body token.
 
 The direct-backend fallback is `http://127.0.0.1:8001/django/api/v1`, matching both checked-in
-environment files. Deployments behind a reverse proxy must set `VITE_API_BASE_URL` to their
-public API prefix instead of relying on that local fallback.
+environment files. Deployments behind a reverse proxy may set `VITE_API_BASE_URL` to an absolute
+public API URL or, for same-origin H5 deployments, a root-relative API prefix such as
+`/api/django/api/v1`.
 
 Image uploads use the same current access-token source and shared refresh flight as protected
 REST requests. A 401 upload retries its original file once after refresh; a failed refresh
@@ -83,10 +84,11 @@ Django upload responses are accepted only when `code` is exactly `0` and a URL i
 Relative `/static/...` URLs are resolved from the API origin; absolute upload URLs are accepted
 only when they use that same API origin and a `/static/` path.
 
-`VITE_API_BASE_URL` must be an absolute HTTP(S) URL when relative upload URLs need resolving;
-an invalid base fails with a generic message that does not echo configuration or credentials.
-WebSocket roots are derived from that URL origin (`https`→`wss`, `http`→`ws`), never from the
-`/django/api/v1` path.
+Relative H5 API prefixes are resolved from the current browser origin for upload responses. App
+and mini-program builds must use an absolute HTTP(S) API URL. A missing or invalid browser origin
+for a relative H5 prefix fails with a generic message that does not echo configuration or
+credentials. WebSocket roots are derived from an absolute API URL origin (`https`→`wss`,
+`http`→`ws`), never from the `/django/api/v1` path.
 
 Chat WebSockets send the Bearer token only in `uni.connectSocket({ header })`; the URL query
 fallback is closed in this client. A successful refresh reconnects chat with the successor

@@ -30,8 +30,32 @@ test('resolves only same-origin static upload URLs', () => {
   assert.throws(() => resolveUploadUrl('http://127.0.0.1:8001/django/api/v1', '/media/a.jpg'), /invalid upload URL/)
 })
 
-test('rejects a non-absolute API base with a friendly non-sensitive error', () => {
-  assert.throws(() => resolveUploadUrl('/django/api/v1', '/static/uploads/a.jpg'), /invalid API base/)
+test('resolves a relative H5 API base from the browser origin', () => {
+  assert.equal(
+    resolveUploadUrl('/api/django/api/v1', '/static/uploads/a.jpg', 'http://193.112.94.8:8080'),
+    'http://193.112.94.8:8080/static/uploads/a.jpg'
+  )
+})
+
+test('uses the current browser origin for a relative H5 API base', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { origin: 'http://193.112.94.8:8080' }
+  })
+  try {
+    assert.equal(
+      resolveUploadUrl('/api/django/api/v1', '/static/uploads/a.jpg'),
+      'http://193.112.94.8:8080/static/uploads/a.jpg'
+    )
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'location', descriptor)
+    else delete globalThis.location
+  }
+})
+
+test('fails with a generic safe error when a relative API base has no browser origin', () => {
+  assert.throws(() => resolveUploadUrl('/api/django/api/v1', '/static/uploads/a.jpg'), /upload failed/)
 })
 
 test('all upload pages delegate response parsing and static URL construction to the shared helper', async () => {
