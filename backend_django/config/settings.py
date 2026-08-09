@@ -334,30 +334,28 @@ def _build_chat_redis_url() -> str:
     return f"{scheme}://{auth_part}{CHAT_REDIS_HOST}:{CHAT_REDIS_PORT}/{CHAT_REDIS_DB}"
 
 if CHAT_ENABLE_WS:
-    try:
-        import channels  # noqa: F401
-        import daphne  # noqa: F401
+    import channels  # noqa: F401
+    import channels_redis  # noqa: F401
+    import daphne  # noqa: F401
 
-        if "daphne" not in INSTALLED_APPS:
-            INSTALLED_APPS.insert(0, "daphne")
-        if "channels" not in INSTALLED_APPS:
-            INSTALLED_APPS.append("channels")
-        redis_host = {
-            "address": _build_chat_redis_url(),
-            "socket_connect_timeout": CHAT_REDIS_SOCKET_CONNECT_TIMEOUT,
-            "socket_timeout": CHAT_REDIS_SOCKET_TIMEOUT,
-            "health_check_interval": CHAT_REDIS_HEALTH_CHECK_INTERVAL,
-        }
-        CHANNEL_LAYERS = {
-            "default": {
-                "BACKEND": "channels_redis.core.RedisChannelLayer",
-                "CONFIG": {
-                    "hosts": [redis_host],
-                },
+    if "daphne" not in INSTALLED_APPS:
+        INSTALLED_APPS.insert(0, "daphne")
+    if "channels" not in INSTALLED_APPS:
+        INSTALLED_APPS.append("channels")
+    redis_host = {
+        "address": _build_chat_redis_url(),
+        "socket_connect_timeout": CHAT_REDIS_SOCKET_CONNECT_TIMEOUT,
+        "socket_timeout": CHAT_REDIS_SOCKET_TIMEOUT,
+        "health_check_interval": CHAT_REDIS_HEALTH_CHECK_INTERVAL,
+    }
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [redis_host],
             }
         }
-    except Exception:
-        CHAT_ENABLE_WS = False
+    }
 
 CACHE_BACKEND = os.getenv("CACHE_BACKEND", "locmem").lower()
 CACHE_DEFAULT_TTL = int(os.getenv("CACHE_DEFAULT_TTL", "300"))

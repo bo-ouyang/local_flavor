@@ -1,114 +1,94 @@
-import { goLogin } from '@/utils/auth'
+import { createAuthSessionStorage } from './auth-session.js'
+import { createRequestClient } from './request-client.js'
+import { createSessionRefreshEmitter } from './session-refresh-emitter.js'
+import { createUploadClient } from './upload-client.js'
 
-const BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
+const BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/django/api/v1'
 
-type ApiEnvelope<T> = {
-  code: number
-  message: string
-  data: T
-  request_id?: string
-  errors?: any
-}
-
-type AuthMode = 'none' | 'required'
-
-type RequestExtOptions = UniApp.RequestOptions & {
-  authMode?: AuthMode
+type RequestOptions = {
+  header?: Record<string, string>
   skipToast?: boolean
+  [key: string]: any
 }
 
-const clearAuth = () => {
-  uni.removeStorageSync('auth_token')
-  uni.removeStorageSync('user_info')
-}
+const sessions = createAuthSessionStorage({
+  get: (key: string) => uni.getStorageSync(key),
+  remove: (key: string) => uni.removeStorageSync(key),
+  set: (key: string, value: any) => uni.setStorageSync(key, value)
+})
+const readAccessToken = () => sessions.getAccessToken()
 
-const request = <T>(options: RequestExtOptions): Promise<T> => {
-  const authMode = options.authMode || 'none'
-  const token = uni.getStorageSync('auth_token')
+let authFailureHandler = () => {}
+const sessionRefreshEmitter = createSessionRefreshEmitter()
 
-  if (authMode === 'required' && !token) {
-    goLogin()
-    return Promise.reject({ code: 401, message: 'login required', needLogin: true })
-  }
-
-  return new Promise((resolve, reject) => {
+const client = createRequestClient({
+  sessions,
+  onAuthFailure: () => {
+    authFailureHandler()
+  },
+  onSessionRefreshed: (session: any) => {
+    sessionRefreshEmitter.emit(session)
+  },
+  request: ({ url, method, data, header }: any) => new Promise((resolve, reject) => {
     uni.request({
-      ...options,
-      url: BASE_URL + options.url,
-      header: {
-        ...options.header,
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      success: (res) => {
-        const payload = res.data as any
-
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          if (
-            payload &&
-            typeof payload === 'object' &&
-            Object.prototype.hasOwnProperty.call(payload, 'code') &&
-            Object.prototype.hasOwnProperty.call(payload, 'message')
-          ) {
-            const wrapped = payload as ApiEnvelope<T>
-            if (wrapped.code === 0) {
-              resolve(wrapped.data as T)
-              return
-            }
-            if (!options.skipToast) {
-              uni.showToast({ title: wrapped.message || '请求失败', icon: 'none' })
-            }
-            reject(wrapped)
-            return
-          }
-          resolve(payload as T)
-          return
-        }
-
-        const message = payload?.message || `HTTP ${res.statusCode}`
-        if (res.statusCode === 401 || res.statusCode === 403) {
-          clearAuth()
-          if (authMode === 'required') {
-            goLogin()
-          }
-        }
-        if (!options.skipToast) {
-          uni.showToast({ title: message, icon: 'none' })
-        }
-        reject({ code: res.statusCode, message, raw: res })
-      },
-      fail: (err) => {
-        if (!options.skipToast) {
-          uni.showToast({ title: '网络异常', icon: 'none' })
-        }
-        reject(err)
-      }
+      url: BASE_URL + url,
+      method,
+      data,
+      header,
+      success: resolve,
+      fail: reject
     })
   })
+})
+
+const uploadClient = createUploadClient({
+  getAccessToken: readAccessToken,
+  refresh: () => client.refresh(),
+  upload: (options: any) => new Promise((resolve, reject) => {
+    uni.uploadFile({
+      ...options,
+      success: resolve,
+      fail: reject
+    })
+  })
+})
+
+const toastForError = (error: any, options?: RequestOptions) => {
+  if (options?.skipToast || error?.needLogin) return
+  uni.showToast({ title: error?.message || '请求失败', icon: 'none' })
 }
 
-const base = {
-  get: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'GET', data, ...(opts || {}) }),
-  post: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'POST', data, ...(opts || {}) }),
-  put: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'PUT', data, ...(opts || {}) }),
-  patch: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'PATCH' as any, data, ...(opts || {}) }),
-  delete: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    request<T>({ url, method: 'DELETE', data, ...(opts || {}) })
+const invoke = <T>(operation: () => Promise<T>, options?: RequestOptions) =>
+  operation().catch((error) => {
+    toastForError(error, options)
+    throw error
+  })
+
+const withOptions = <T>(operation: (opts?: RequestOptions) => Promise<T>, options?: RequestOptions) =>
+  invoke(() => operation(options), options)
+
+export const getSession = () => sessions.getSession()
+export const getAccessToken = readAccessToken
+export const uploadWithAuth = (options: any) => uploadClient.upload(options)
+export const saveLoginResult = (result: any) => {
+  const session = sessions.saveLoginResult(result)
+  client.resetAuthFailure()
+  return session
 }
+export const clearLocalAuth = () => sessions.clear()
+export const setAuthFailureHandler = (handler: () => void) => { authFailureHandler = handler }
+export const onSessionRefreshed = (listener: (session: any) => void) => sessionRefreshEmitter.subscribe(listener)
 
 export default {
-  ...base,
-  authGet: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    base.get<T>(url, data, { ...(opts || {}), authMode: 'required' }),
-  authPost: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    base.post<T>(url, data, { ...(opts || {}), authMode: 'required' }),
-  authPut: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    base.put<T>(url, data, { ...(opts || {}), authMode: 'required' }),
-  authPatch: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    base.patch<T>(url, data, { ...(opts || {}), authMode: 'required' }),
-  authDelete: <T>(url: string, data?: any, opts?: Partial<RequestExtOptions>) =>
-    base.delete<T>(url, data, { ...(opts || {}), authMode: 'required' })
+  get: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.get(url, data, opts), options),
+  post: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.post(url, data, opts), options),
+  put: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.put(url, data, opts), options),
+  patch: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.patch(url, data, opts), options),
+  delete: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.delete(url, data, opts), options),
+  authGet: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.authGet(url, data, opts), options),
+  authPost: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.authPost(url, data, opts), options),
+  authPut: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.authPut(url, data, opts), options),
+  authPatch: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.authPatch(url, data, opts), options),
+  authDelete: <T>(url: string, data?: any, options?: RequestOptions) => withOptions((opts) => client.authDelete(url, data, opts), options),
+  logout: () => client.logout()
 }

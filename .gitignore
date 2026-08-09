@@ -24,6 +24,7 @@ frontend/uni-app/node_modules/
 frontend/uni-app/dist/
 frontend/uni-app/.hbuilderx/
 frontend/uni-app/project.private.config.json
+frontend/uni-app/vite.config.ts.timestamp-*.mjs
 env.dev
 env.pro
 *.swp

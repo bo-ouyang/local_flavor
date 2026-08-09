@@ -2,12 +2,14 @@
   "name": "local-flavor-uniapp",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "engines": {
     "node": "22.23.2",
     "npm": "10.9.8"
   },
   "packageManager": "npm@10.9.8",
   "scripts": {
+    "test": "node --test test/*.test.mjs",
     "dev:app": "uni -p app",
     "dev:app-android": "uni -p app-android",
     "dev:app-ios": "uni -p app-ios",

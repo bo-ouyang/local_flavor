@@ -24,6 +24,7 @@ Use the pinned Node release, then install only from the official npm registry:
 ```bash
 npm ci --ignore-scripts --registry=https://registry.npmjs.org/
 npm ls --all
+npm test
 npm run type-check
 npm run build:mp-weixin
 npm run build:h5
@@ -55,3 +56,44 @@ fails the check.
 Static checks and builds do not replace WeChat device testing. Complete
 [`docs/2026-07-30_uni-app升级真机回归清单.md`](../../docs/2026-07-30_uni-app升级真机回归清单.md)
 before release.
+
+## Authentication sessions (AUTH-01B)
+
+The login client reads opaque credentials from `data.session`. They are persisted once as
+`auth_session`; an existing `auth_token` is read only as an access-only migration fallback
+until a nested session is received. Never copy either opaque token into logs, URL parameters,
+or extra storage keys.
+
+Protected requests attach the opaque access token as `Authorization: Bearer …`. Concurrent
+401 responses share one `POST /user/session/refresh`, then retry their own original request
+once. A failed refresh clears local state and returns the user to login; 403 responses do not
+refresh. Logout always clears local state after making a best-effort
+`POST /user/session/logout` call authenticated by the current Bearer access token. The client
+may include its refresh token in that request body, but the current server authorizes logout
+from the Bearer session and does not use the body token.
+
+The direct-backend fallback is `http://127.0.0.1:8001/django/api/v1`, matching both checked-in
+environment files. Deployments behind a reverse proxy must set `VITE_API_BASE_URL` to their
+public API prefix instead of relying on that local fallback.
+
+Image uploads use the same current access-token source and shared refresh flight as protected
+REST requests. A 401 upload retries its original file once after refresh; a failed refresh
+clears authentication and does not retry again. Tokens are never included in upload URLs.
+Django upload responses are accepted only when `code` is exactly `0` and a URL is present.
+Relative `/static/...` URLs are resolved from the API origin; absolute upload URLs are accepted
+only when they use that same API origin and a `/static/` path.
+
+`VITE_API_BASE_URL` must be an absolute HTTP(S) URL when relative upload URLs need resolving;
+an invalid base fails with a generic message that does not echo configuration or credentials.
+WebSocket roots are derived from that URL origin (`https`→`wss`, `http`→`ws`), never from the
+`/django/api/v1` path.
+
+Chat WebSockets send the Bearer token only in `uni.connectSocket({ header })`; the URL query
+fallback is closed in this client. A successful refresh reconnects chat with the successor
+access token. Platforms that cannot send WebSocket headers use the existing polling path with
+a user-visible notice instead of exposing a token in the URL. The server-side legacy query
+compatibility remains until AUTH-01C removes it after the client migration window. Chat pauses
+polling and ignores refresh-triggered reconnects while hidden; it resumes only when shown.
+
+The device-session panel only displays active records (`revoked_at` is empty). Revocation asks
+for confirmation and disables duplicate actions until the server response completes.

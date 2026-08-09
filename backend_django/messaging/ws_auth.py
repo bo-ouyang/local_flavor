@@ -4,6 +4,7 @@ from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 from channels.middleware import BaseMiddleware
+from channels.security.websocket import AllowedHostsOriginValidator
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.db import close_old_connections
@@ -22,9 +23,9 @@ def _get_user_by_token(token: str | None):
 def _get_auth_context_by_token(token: str | None):
     resolution = resolve_auth_token(token)
     if resolution is None:
-        return None, None
+        return None, None, False
     session_id = resolution.session.id if resolution.session else None
-    return resolution.user, session_id
+    return resolution.user, session_id, resolution.session is not None
 
 
 def ws_query_tokens_allowed() -> bool:
@@ -53,11 +54,32 @@ def _extract_token(scope) -> str | None:
     return _extract_auth(scope)[0]
 
 
+class WebSocketOriginAuthValidator:
+    """Allow browser origins through Channels validation and native Bearer clients only."""
+
+    def __init__(self, application):
+        self.application = application
+        self.origin_validator = AllowedHostsOriginValidator(application)
+
+    async def __call__(self, scope, receive, send):
+        headers = dict(scope.get("headers", []))
+        if headers.get(b"origin"):
+            return await self.origin_validator(scope, receive, send)
+        authorization = headers.get(b"authorization", b"").decode(
+            "utf-8", errors="ignore"
+        )
+        if authorization.lower().startswith("bearer ") and authorization[7:].strip():
+            return await self.application(scope, receive, send)
+        await send({"type": "websocket.close"})
+
+
 class TokenAuthMiddleware(BaseMiddleware):
     async def __call__(self, scope, receive, send):
         close_old_connections()
         token, auth_source = _extract_auth(scope)
-        local_user, auth_session_id = await _get_auth_context_by_token(token)
+        local_user, auth_session_id, is_opaque_session = await _get_auth_context_by_token(token)
+        if auth_source == "query" and is_opaque_session:
+            local_user, auth_session_id, auth_source = None, None, None
         scope["local_user"] = local_user
         scope["auth_session_id"] = auth_session_id
         scope["auth_token"] = token

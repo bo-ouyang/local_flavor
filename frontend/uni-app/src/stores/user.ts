@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import request from '@/utils/request'
+import { clearLocalAuth, getAccessToken, saveLoginResult } from '@/utils/request'
 
 export const useUserStore = defineStore('user', {
 	state: () => ({
@@ -13,10 +14,10 @@ export const useUserStore = defineStore('user', {
             latitude: null as number | null,
             longitude: null as number | null
         },
-        token: uni.getStorageSync('auth_token') || ''
+        token: getAccessToken()
 	}),
 	actions: {
-        logout() {
+        clearLocalAuth() {
             this.token = ''
             this.userInfo = {
                 id: 0,
@@ -28,13 +29,22 @@ export const useUserStore = defineStore('user', {
                 latitude: null,
                 longitude: null
             }
-            uni.removeStorageSync('auth_token')
-            uni.removeStorageSync('user_info')
+            clearLocalAuth()
+        },
+        syncAccessToken(accessToken?: string) {
+            this.token = accessToken || getAccessToken()
+        },
+        async logout() {
+            try {
+                await request.logout()
+            } finally {
+                this.clearLocalAuth()
+            }
         },
 
         applyLoginResult(res: any) {
-            this.token = res.access_token
-            uni.setStorageSync('auth_token', this.token)
+            const session = saveLoginResult(res)
+            this.syncAccessToken(session?.access_token)
             if (res.user) {
                 this.setUserInfo(res.user)
             }

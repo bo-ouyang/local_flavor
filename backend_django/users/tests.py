@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone as datetime_timezone
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 from threading import Barrier
@@ -744,7 +745,7 @@ class ProductionAuthSettingsTests(SimpleTestCase):
 )
 class WebSocketSessionContinuityTests(TransactionTestCase):
     def setUp(self):
-        self.user = LocalUser.objects.create(openid="ws-session-user")
+        self.user = LocalUser.objects.create(openid="lf_a_ws-session-user")
         peer = LocalUser.objects.create(openid="ws-session-peer")
         self.conversation = Conversation.objects.create(
             participant_low=self.user,
@@ -767,7 +768,7 @@ class WebSocketSessionContinuityTests(TransactionTestCase):
             )
         )
 
-    def _communicator(self, credentials=None, source="query"):
+    def _communicator(self, credentials=None, source="header"):
         credentials = credentials or self.credentials
         path = f"/ws/chat/conversations/{self.conversation.id}/"
         headers = None
@@ -780,6 +781,39 @@ class WebSocketSessionContinuityTests(TransactionTestCase):
             path,
             headers=headers,
         )
+
+    def test_opaque_access_token_in_query_is_rejected(self):
+        async def scenario():
+            communicator = self._communicator(source="query")
+            connected, _subprotocol = await communicator.connect()
+            self.assertFalse(connected)
+
+        async_to_sync(scenario)()
+
+    def test_opaque_access_token_in_authorization_header_is_accepted(self):
+        async def scenario():
+            communicator = self._communicator(source="header")
+            connected, _subprotocol = await communicator.connect()
+            self.assertTrue(connected)
+            await communicator.receive_json_from()
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_legacy_token_that_starts_with_opaque_prefix_is_accepted_in_query(self):
+        legacy_token = auth.issue_token(self.user.openid)
+        self.assertTrue(legacy_token.startswith("lf_a_"))
+        self.assertIsNone(auth.resolve_auth_token(legacy_token).session)
+
+        async def scenario():
+            path = f"/ws/chat/conversations/{self.conversation.id}/?token={legacy_token}"
+            communicator = WebsocketCommunicator(self.application, path)
+            connected, _subprotocol = await communicator.connect()
+            self.assertTrue(connected)
+            await communicator.receive_json_from()
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
 
     def test_revoked_session_closes_before_delivering_group_push(self):
         async def scenario():
@@ -821,8 +855,13 @@ class WebSocketSessionContinuityTests(TransactionTestCase):
         async_to_sync(scenario)()
 
     def test_query_connection_closes_when_migration_cutoff_passes(self):
+        legacy_token = auth.issue_token(self.user.openid)
+
         async def scenario():
-            communicator = self._communicator(source="query")
+            communicator = WebsocketCommunicator(
+                self.application,
+                f"/ws/chat/conversations/{self.conversation.id}/?token={legacy_token}",
+            )
             connected, _subprotocol = await communicator.connect()
             self.assertTrue(connected)
             await communicator.receive_json_from()
@@ -873,6 +912,89 @@ class WebSocketSessionContinuityTests(TransactionTestCase):
             self.assertTrue(reconnected)
             await new_socket.receive_json_from()
             await new_socket.disconnect()
+
+        async_to_sync(scenario)()
+
+
+@override_settings(ALLOWED_HOSTS=["chat.example.test"])
+class WebSocketOriginAdmissionTests(SimpleTestCase):
+    def test_asgi_wraps_token_authentication_with_origin_admission(self):
+        asgi_source = (Path(__file__).resolve().parent.parent / "config" / "asgi.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("WebSocketOriginAuthValidator(", asgi_source)
+
+    def _application(self, received_scopes):
+        validator = getattr(ws_auth, "WebSocketOriginAuthValidator", None)
+        self.assertIsNotNone(
+            validator,
+            "WebSocket connections require an origin/no-origin admission wrapper",
+        )
+
+        async def inner(scope, receive, send):
+            received_scopes.append(scope)
+            await send({"type": "websocket.accept"})
+
+        return validator(inner)
+
+    def test_allowed_browser_origin_reaches_inner_application(self):
+        received_scopes = []
+
+        async def scenario():
+            communicator = WebsocketCommunicator(
+                self._application(received_scopes),
+                "/ws/chat/conversations/1/",
+                headers=[(b"origin", b"https://chat.example.test")],
+            )
+            connected, _subprotocol = await communicator.connect()
+            self.assertTrue(connected)
+            self.assertEqual(len(received_scopes), 1)
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_disallowed_browser_origin_is_rejected_before_inner_application(self):
+        received_scopes = []
+
+        async def scenario():
+            communicator = WebsocketCommunicator(
+                self._application(received_scopes),
+                "/ws/chat/conversations/1/",
+                headers=[(b"origin", b"https://attacker.example")],
+            )
+            connected, _subprotocol = await communicator.connect()
+            self.assertFalse(connected)
+            self.assertEqual(received_scopes, [])
+
+        async_to_sync(scenario)()
+
+    def test_no_origin_bearer_header_reaches_inner_application(self):
+        received_scopes = []
+
+        async def scenario():
+            communicator = WebsocketCommunicator(
+                self._application(received_scopes),
+                "/ws/chat/conversations/1/",
+                headers=[(b"authorization", b"Bearer opaque-access-token")],
+            )
+            connected, _subprotocol = await communicator.connect()
+            self.assertTrue(connected)
+            self.assertEqual(len(received_scopes), 1)
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_no_origin_query_token_is_rejected_before_inner_application(self):
+        received_scopes = []
+
+        async def scenario():
+            communicator = WebsocketCommunicator(
+                self._application(received_scopes),
+                "/ws/chat/conversations/1/?token=legacy-token",
+            )
+            connected, _subprotocol = await communicator.connect()
+            self.assertFalse(connected)
+            self.assertEqual(received_scopes, [])
 
         async_to_sync(scenario)()
 

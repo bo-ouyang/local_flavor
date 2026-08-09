@@ -101,13 +101,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import request from '@/utils/request'
+import request, { uploadWithAuth } from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import { ensureAuthed } from '@/utils/auth'
+import { parseUploadResponse, resolveUploadUrl } from '@/utils/upload-response.js'
 
 const userStore = useUserStore()
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
-const API_ORIGIN = API_BASE.replace(/\/api\/v1\/?$/, '')
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/django/api/v1'
 
 const categories = ref<any[]>([])
 const seasons = ref<any[]>([])
@@ -232,26 +232,12 @@ const uploadImages = async (paths: string[]) => {
   uni.showLoading({ title: '上传中...' })
   for (const path of paths) {
     try {
-      await new Promise((resolve, reject) => {
-        uni.uploadFile({
-          url: `${API_BASE}/upload/`,
-          filePath: path,
-          name: 'file',
-          header: {
-            Authorization: `Bearer ${userStore.token}`
-          },
-          success: (uploadRes) => {
-            const data = JSON.parse(uploadRes.data || '{}')
-            if (data?.code === 0 && data?.data?.url) {
-              form.images.push(`${API_ORIGIN}${data.data.url}`)
-              resolve(true)
-              return
-            }
-            reject(new Error('upload failed'))
-          },
-          fail: (err) => reject(err)
-        })
+      const uploadRes: any = await uploadWithAuth({
+        url: `${API_BASE}/upload/`,
+        filePath: path,
+        name: 'file'
       })
+      form.images.push(resolveUploadUrl(API_BASE, parseUploadResponse(uploadRes)))
     } catch (e) {
       console.error('upload image failed', e)
       uni.showToast({ title: '图片上传失败', icon: 'none' })

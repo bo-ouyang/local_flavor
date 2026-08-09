@@ -77,6 +77,27 @@
           <text class="entry-title">我的交换</text>
           <text class="entry-arrow">›</text>
         </view>
+        <view v-if="isAuthed" class="entry" @click="toggleSessionManager">
+          <text class="entry-title">设备会话管理</text>
+          <text class="entry-arrow">›</text>
+        </view>
+        <view v-if="showSessionManager" class="session-panel">
+          <view class="session-panel-head">
+            <text class="session-panel-title">已登录设备</text>
+            <button size="mini" :loading="sessionState.loading" :disabled="sessionState.actionBusy" @click="loadSessions">刷新</button>
+          </view>
+          <text v-if="sessionState.error" class="session-error">{{ sessionState.error }}</text>
+          <view v-else-if="sessionState.loading" class="session-empty">正在加载设备会话…</view>
+          <view v-else-if="!sessionState.sessions.length" class="session-empty">没有可管理的设备会话</view>
+          <view v-else v-for="session in sessionState.sessions" :key="session.id" class="session-row">
+            <view>
+              <text class="session-name">{{ session.device_label || '未命名设备' }}{{ session.current ? '（当前设备）' : '' }}</text>
+              <text class="session-meta">上次活跃：{{ formatSessionTime(session.last_seen_at || session.created_at) }}</text>
+            </view>
+            <button size="mini" class="revoke" :disabled="sessionState.actionBusy" @click="revokeSession(session.id)">撤销</button>
+          </view>
+          <button v-if="sessionState.sessions.length > 1" class="revoke-others" :loading="sessionState.actionBusy" :disabled="sessionState.actionBusy" @click="revokeOtherSessions">撤销其他设备</button>
+        </view>
         <button v-if="isAuthed" class="logout" @click="logout">退出登录</button>
         <button v-else class="login" @click="goLogin()">去登录</button>
       </template>
@@ -85,17 +106,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { useUserStore } from '@/stores/user'
 import request from '@/utils/request'
 import { ensureAuthed, goLogin } from '@/utils/auth'
+import { createSessionManager } from '@/utils/session-manager.js'
 
 const userStore = useUserStore()
 const myItems = ref<any[]>([])
 const favoriteItems = ref<any[]>([])
 const activeTab = ref<'listings' | 'favorites' | 'actions'>('listings')
 const locating = ref(false)
+const showSessionManager = ref(false)
+const sessionManager = createSessionManager({
+  request,
+  onCurrentRevoked: () => {
+    userStore.clearLocalAuth()
+    uni.showToast({ title: '当前设备会话已撤销，请重新登录', icon: 'none' })
+    goLogin()
+  }
+})
+const sessionState = reactive(sessionManager.state)
 
 const fallbackCover = 'https://dummyimage.com/400x300/f1f5f9/94a3b8&text=Local+Treasure'
 const defaultAvatar = 'https://dummyimage.com/200x200/e2e8f0/94a3b8&text=Avatar'
@@ -154,10 +186,59 @@ const refreshLocation = async () => {
   }
 }
 
-const logout = () => {
-  userStore.logout()
+const logout = async () => {
+  await userStore.logout()
   uni.showToast({ title: '已退出登录', icon: 'none' })
 }
+
+const formatSessionTime = (value?: string) => {
+  if (!value) return '未知'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '未知' : date.toLocaleString()
+}
+
+const loadSessions = async () => {
+  try {
+    await sessionManager.load()
+  } catch (_) {
+    // The state renders the user-safe error message returned by the manager.
+  }
+}
+
+const toggleSessionManager = async () => {
+  showSessionManager.value = !showSessionManager.value
+  if (showSessionManager.value) await loadSessions()
+}
+
+const revokeSession = async (sessionId: number) => {
+  if (sessionState.actionBusy || !await confirmSessionAction('撤销后该设备需要重新登录，是否继续？')) return
+  try {
+    await sessionManager.revoke(sessionId)
+    if (isAuthed.value) uni.showToast({ title: '设备会话已撤销', icon: 'none' })
+  } catch (_) {
+    uni.showToast({ title: '撤销设备会话失败', icon: 'none' })
+  }
+}
+
+const revokeOtherSessions = async () => {
+  if (sessionState.actionBusy || !await confirmSessionAction('将撤销除当前设备外的所有设备，是否继续？')) return
+  try {
+    await sessionManager.revokeOthers()
+    uni.showToast({ title: '其他设备会话已撤销', icon: 'none' })
+  } catch (_) {
+    uni.showToast({ title: '撤销其他设备失败', icon: 'none' })
+  }
+}
+
+const confirmSessionAction = (content: string) => new Promise<boolean>((resolve) => {
+  uni.showModal({
+    title: '确认撤销',
+    content,
+    confirmText: '撤销',
+    success: (result) => resolve(!!result.confirm),
+    fail: () => resolve(false)
+  })
+})
 
 const loadMyItems = async () => {
   if (!isAuthed.value || !userStore.userInfo.id) {
@@ -378,6 +459,59 @@ onShow(async () => {
 .entry-arrow {
   color: #94a3b8;
   font-size: 34rpx;
+}
+
+.session-panel {
+  background: #fff;
+  border: 1rpx solid #e2e8f0;
+  border-radius: 14rpx;
+  padding: 18rpx;
+  margin: -2rpx 0 12rpx;
+}
+
+.session-panel-head,
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.session-panel-title,
+.session-name {
+  display: block;
+  color: #0f172a;
+  font-size: 25rpx;
+  font-weight: 600;
+}
+
+.session-row {
+  padding: 18rpx 0;
+  border-top: 1rpx solid #f1f5f9;
+}
+
+.session-meta,
+.session-empty,
+.session-error {
+  display: block;
+  margin-top: 6rpx;
+  color: #64748b;
+  font-size: 21rpx;
+}
+
+.session-error {
+  color: #dc2626;
+}
+
+.revoke,
+.revoke-others {
+  background: #fff1f2;
+  color: #be123c;
+  border: 1rpx solid #fecdd3;
+}
+
+.revoke-others {
+  margin-top: 12rpx;
+  font-size: 23rpx;
 }
 
 .logout,

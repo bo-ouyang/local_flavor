@@ -1,24 +1,26 @@
 <script>
 	import { useUserStore } from '@/stores/user'
+	import { onSessionRefreshed, setAuthFailureHandler } from '@/utils/request'
+	import { goLogin } from '@/utils/auth'
 
 	export default {
 		onLaunch: async function() {
-			console.log('App Launch')
 			const userStore = useUserStore()
+			setAuthFailureHandler(() => {
+				userStore.clearLocalAuth()
+				goLogin()
+			})
+			onSessionRefreshed((session) => userStore.syncAccessToken(session.access_token))
             if (!userStore.token) return
             try {
 			    await userStore.fetchUserInfo()
             } catch (e) {
                 console.error('init profile failed', e)
-                userStore.logout()
+                userStore.clearLocalAuth()
             }
 		},
-		onShow: function() {
-			console.log('App Show')
-		},
-		onHide: function() {
-			console.log('App Hide')
-		}
+		onShow: function() {},
+		onHide: function() {}
 	}
 </script>
 

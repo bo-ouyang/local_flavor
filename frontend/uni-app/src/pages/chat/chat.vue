@@ -51,13 +51,19 @@
 import { computed, nextTick, ref } from 'vue'
 import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { useUserStore } from '@/stores/user'
-import request from '@/utils/request'
+import request, { getAccessToken, onSessionRefreshed } from '@/utils/request'
 import { goLogin } from '@/utils/auth'
+import { createSocketGenerationGuard } from '@/utils/socket-generation.js'
+import { createChatVisibilityGate } from '@/utils/chat-visibility.js'
+import { getChatWebSocketUrl } from '@/utils/ws-url.js'
 
 const userStore = useUserStore()
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
-const WS_BASE = API_BASE.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '')
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/django/api/v1'
 const WS_ENABLED = (import.meta as any).env?.VITE_CHAT_ENABLE_WS === '1'
+let WS_HEADERS_SUPPORTED = true
+// #ifdef H5
+WS_HEADERS_SUPPORTED = false
+// #endif
 const isAuthed = computed(() => !!userStore.token)
 const conversationId = ref(0)
 const targetId = ref(0)
@@ -72,7 +78,10 @@ const wsUnavailable = ref(false)
 const wsConnecting = ref(false)
 let socketTask: UniApp.SocketTask | null = null
 let pollingTimer: any = null
-let manualSocketClosing = false
+const socketGuard = createSocketGenerationGuard()
+const visibilityGate = createChatVisibilityGate()
+let stopSessionRefreshListener: (() => void) | null = null
+let socketHeaderWarningShown = false
 
 const sortBySeq = (list: any[]) => {
   return [...list].sort((a, b) => (a.seq || 0) - (b.seq || 0))
@@ -98,8 +107,8 @@ const loadHistory = async () => {
     messages.value = sortBySeq(res || [])
     scrollToBottom()
     await ackRead()
-  } catch (e) {
-    console.error('load history failed', e)
+  } catch {
+    console.warn('chat history unavailable')
   }
 }
 
@@ -114,8 +123,8 @@ const pollLatest = async () => {
     mergeMessages(res || [])
     scrollToBottom()
     await ackRead()
-  } catch (e) {
-    console.error('poll latest failed', e)
+  } catch {
+    console.warn('chat updates unavailable')
   }
 }
 
@@ -128,8 +137,8 @@ const ackRead = async () => {
       { seq: latestSeq },
       { skipToast: true }
     )
-  } catch (e) {
-    console.error('ack read failed', e)
+  } catch {
+    console.warn('chat read receipt unavailable')
   }
 }
 
@@ -141,8 +150,8 @@ const loadMyItems = async () => {
   try {
     const res: any = await request.get('/items/', { publisher_id: userStore.userInfo.id, limit: 50 }, { skipToast: true })
     myItems.value = res || []
-  } catch (e) {
-    console.error('load my items failed', e)
+  } catch {
+    console.warn('chat item list unavailable')
   }
 }
 
@@ -167,8 +176,8 @@ const sendMessage = async (payload: any) => {
     mergeMessages([msg])
     scrollToBottom()
     await ackRead()
-  } catch (e) {
-    console.error('send message failed', e)
+  } catch {
+    console.warn('chat message send failed')
   } finally {
     sending.value = false
   }
@@ -236,14 +245,15 @@ const handleSocketPayload = async (payload: any) => {
 const closeSocket = () => {
   wsConnected.value = false
   wsConnecting.value = false
-  if (socketTask) {
-    manualSocketClosing = true
+  const task = socketTask
+  socketTask = null
+  if (task) {
+    socketGuard.release(task)
     try {
-      socketTask.close({})
-    } catch (e) {
-      console.error('close socket failed', e)
+      task.close({})
+    } catch {
+      console.warn('chat socket close failed')
     }
-    socketTask = null
   }
 }
 
@@ -252,51 +262,63 @@ const connectSocket = () => {
     wsUnavailable.value = true
     return
   }
-  if (!conversationId.value || !userStore.token || socketTask || wsUnavailable.value || wsConnecting.value) {
+  if (!WS_HEADERS_SUPPORTED) {
+    wsUnavailable.value = true
+    if (!socketHeaderWarningShown) {
+      socketHeaderWarningShown = true
+      uni.showToast({ title: '当前平台不支持带认证头的聊天连接，将使用安全轮询', icon: 'none' })
+    }
+    return
+  }
+  const accessToken = getAccessToken()
+  if (!conversationId.value || !accessToken || socketTask || wsUnavailable.value || wsConnecting.value) {
     return
   }
   wsConnecting.value = true
-  const url = `${WS_BASE}/ws/chat/conversations/${conversationId.value}/?token=${encodeURIComponent(userStore.token)}`
-  socketTask = uni.connectSocket({
+  const url = getChatWebSocketUrl(API_BASE, conversationId.value)
+  const task = uni.connectSocket({
     url,
     header: {
-      Authorization: `Bearer ${userStore.token}`
+      Authorization: `Bearer ${accessToken}`
     },
     complete: () => {}
   })
+  socketTask = task
+  socketGuard.activate(task)
 
-  socketTask.onOpen(() => {
+  task.onOpen(() => {
+    if (!socketGuard.isCurrent(task)) return
     wsConnected.value = true
     wsConnecting.value = false
     wsUnavailable.value = false
-    manualSocketClosing = false
   })
 
-  socketTask.onMessage((res) => {
+  task.onMessage((res) => {
+    if (!socketGuard.isCurrent(task)) return
     try {
       const payload = JSON.parse((res?.data as string) || '{}')
       handleSocketPayload(payload)
-    } catch (e) {
-      console.error('invalid socket payload', e)
+    } catch {
+      console.warn('chat socket payload invalid')
     }
   })
 
-  socketTask.onClose(() => {
+  task.onClose(() => {
+    if (!socketGuard.release(task)) return
     wsConnected.value = false
     wsConnecting.value = false
-    if (!manualSocketClosing && !wsUnavailable.value) {
+    if (!wsUnavailable.value) {
       wsUnavailable.value = true
     }
-    manualSocketClosing = false
     socketTask = null
   })
 
-  socketTask.onError((err) => {
-    console.error('socket error', err)
+  task.onError(() => {
+    if (!socketGuard.release(task)) return
+    console.warn('chat socket unavailable')
     wsConnected.value = false
     wsConnecting.value = false
     wsUnavailable.value = true
-    manualSocketClosing = false
     socketTask = null
   })
 }
@@ -322,26 +344,41 @@ onLoad(async (options: any) => {
 
   if (conversationId.value) {
     await Promise.all([loadHistory(), loadMyItems()])
+    stopSessionRefreshListener = onSessionRefreshed(() => {
+      visibilityGate.runWhenVisible(() => {
+        if (!conversationId.value || !isAuthed.value) return
+        closeSocket()
+        wsUnavailable.value = false
+        connectSocket()
+      })
+    })
     connectSocket()
     startPolling()
   }
 })
 
 onShow(async () => {
+  visibilityGate.show()
   if (!isAuthed.value) return
   if (conversationId.value) {
     if (!wsConnected.value && !wsUnavailable.value) connectSocket()
     await pollLatest()
+    startPolling()
   }
 })
 
 onHide(() => {
+  visibilityGate.hide()
   closeSocket()
+  stopPolling()
 })
 
 onUnload(() => {
+  visibilityGate.hide()
   closeSocket()
   stopPolling()
+  stopSessionRefreshListener?.()
+  stopSessionRefreshListener = null
 })
 </script>
 
