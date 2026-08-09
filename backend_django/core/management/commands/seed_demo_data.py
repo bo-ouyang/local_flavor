@@ -1,505 +1,412 @@
-from django.contrib.auth.hashers import make_password
-from django.core.management.base import BaseCommand
+import os
 
-from community.models import CommunityComment, CommunityPost, CommunityPostLike
+from django.contrib.auth.hashers import make_password
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.db.models import Q
+
+from community.models import (
+    CommunityAuditStatus,
+    CommunityComment,
+    CommunityPost,
+    CommunityPostLike,
+)
 from exchange.models import ExchangeRequest, ExchangeStatus
-from interactions.models import Comment, FlavorTag
-from items.models import Item
-from messaging.models import ChatMessage, Conversation, ConversationMember
+from interactions.models import Comment, FlavorTag, FlavorVote
+from items.models import Item, ItemAuditStatus
+from messaging.models import ChatMessage, Conversation, ConversationMember, Message
 from system_config.models import SystemOption
 from users.models import LocalUser
 
 
+SEED_PREFIX = "seed.e2e."
+SEED_OPENIDS = [f"{SEED_PREFIX}{number:02d}" for number in range(1, 7)]
+
+OPTION_ROWS = (
+    ("Category", "Snack", "小吃", 1),
+    ("Category", "Drink", "饮品", 2),
+    ("Category", "Fruit", "水果", 3),
+    ("Category", "Dish", "菜肴", 4),
+    ("Season", "Spring", "春季", 1),
+    ("Season", "Summer", "夏季", 2),
+    ("Season", "Autumn", "秋季", 3),
+    ("Season", "Winter", "冬季", 4),
+    ("Season", "AllYear", "四季", 5),
+    ("ShelfLife", "Instant", "即时", 1),
+    ("ShelfLife", "Short_Days", "短保", 2),
+    ("ShelfLife", "Long_Months", "长保", 3),
+    ("Portability", "EatOnSpot", "堂食", 1),
+    ("Portability", "Handheld", "手持", 2),
+    ("Portability", "Packaged", "可包装携带", 3),
+)
+
+USER_ROWS = (
+    ("19990000001", "成都试吃者", "Sichuan", "Chengdu", "510100"),
+    ("19990000002", "四川交换者", "Sichuan", "Chengdu", "510100"),
+    ("19990000003", "广州试吃者", "Guangdong", "Guangzhou", "440100"),
+    ("19990000004", "上海交换者", "Shanghai", "Shanghai", "310100"),
+    ("19990000005", "北京试吃者", "Beijing", "Beijing", "110100"),
+    ("19990000006", "西安交换者", "Shaanxi", "Xi'an", "610100"),
+)
+
+
 class Command(BaseCommand):
-    help = "Seed demo users/items/chat/exchanges for local testing"
+    help = "Create or reset the scoped seed.e2e demo dataset."
 
     def add_arguments(self, parser):
-        parser.add_argument("--password", default="Test@123456", help="password for demo phone users")
+        parser.add_argument(
+            "--password",
+            help="Password for seed.e2e accounts; alternatively set DEMO_SEED_PASSWORD.",
+        )
+        parser.add_argument(
+            "--reset",
+            action="store_true",
+            help="Remove only the scoped seed.e2e demo dataset.",
+        )
 
     def handle(self, *args, **options):
-        password = options["password"]
-        pwd_hash = make_password(password)
+        if options["reset"]:
+            with transaction.atomic():
+                self._reset_seed_data()
+            self.stdout.write(self.style.SUCCESS("seed.e2e demo data removed"))
+            return
 
-        demo_users = [
-            {
-                "phone": "13800000000",
-                "nickname": "Demo_Alice",
-                "province": "Sichuan",
-                "city": "Chengdu",
-                "region_code": "510100",
-            },
-            {
-                "phone": "13800000001",
-                "nickname": "Demo_Bob",
-                "province": "Sichuan",
-                "city": "Chengdu",
-                "region_code": "510100",
-            },
-            {
-                "phone": "13800000002",
-                "nickname": "Demo_Carol",
-                "province": "Guangdong",
-                "city": "Guangzhou",
-                "region_code": "440100",
-            },
-            {
-                "phone": "13800000003",
-                "nickname": "Demo_David",
-                "province": "Shanghai",
-                "city": "Shanghai",
-                "region_code": "310100",
-            },
-        ]
+        password = (options.get("password") or os.getenv("DEMO_SEED_PASSWORD") or "").strip()
+        if not password:
+            raise CommandError("--password or DEMO_SEED_PASSWORD is required")
 
-        users_by_phone = {}
-        for row in demo_users:
-            openid = f"phone_{row['phone']}"
-            user, _ = LocalUser.objects.get_or_create(
+        with transaction.atomic():
+            users = self._seed_users(password)
+            self._seed_options()
+            items = self._seed_items(users)
+            exchanges = self._seed_exchanges(users, items)
+            self._seed_conversation(users, items)
+            self._seed_community(users, items, exchanges)
+
+        self.stdout.write(self.style.SUCCESS("seed.e2e demo data ready"))
+        self.stdout.write("Seed account phones: " + ", ".join(row[0] for row in USER_ROWS))
+
+    def _seed_users(self, password):
+        password_hash = make_password(password)
+        users = {}
+        for index, (phone, nickname, province, city, region_code) in enumerate(USER_ROWS, start=1):
+            openid = f"{SEED_PREFIX}{index:02d}"
+            user, _ = LocalUser.objects.update_or_create(
                 openid=openid,
                 defaults={
-                    "phone": row["phone"],
-                    "password_hash": pwd_hash,
-                    "nickname": row["nickname"],
+                    "phone": phone,
+                    "password_hash": password_hash,
+                    "nickname": nickname,
                     "is_verified": True,
-                    "province": row["province"],
-                    "city": row["city"],
-                    "region_code": row["region_code"],
+                    "province": province,
+                    "city": city,
+                    "region_code": region_code,
                 },
             )
-            changed = False
-            for field in ("phone", "nickname", "province", "city", "region_code"):
-                value = row[field]
-                if getattr(user, field) != value:
-                    setattr(user, field, value)
-                    changed = True
-            if user.password_hash != pwd_hash:
-                user.password_hash = pwd_hash
-                changed = True
-            if not user.is_verified:
-                user.is_verified = True
-                changed = True
-            if changed:
-                user.save()
-            users_by_phone[row["phone"]] = user
+            users[index] = user
+        return users
 
-        options_seed = [
-            ("Category", "Snack", "小吃", 1),
-            ("Category", "Drink", "饮品", 2),
-            ("Category", "Fruit", "水果", 3),
-            ("Category", "Dish", "菜肴", 4),
-            ("Season", "Spring", "春", 1),
-            ("Season", "Summer", "夏", 2),
-            ("Season", "Autumn", "秋", 3),
-            ("Season", "Winter", "冬", 4),
-            ("Season", "AllYear", "四季", 5),
-            ("ShelfLife", "Instant", "即食", 1),
-            ("ShelfLife", "Short_Days", "短保", 2),
-            ("ShelfLife", "Long_Months", "长保", 3),
-            ("Portability", "EatOnSpot", "堂食", 1),
-            ("Portability", "Handheld", "手持", 2),
-            ("Portability", "Packaged", "可包装携带", 3),
-        ]
-        for option_type, value, label, sort_order in options_seed:
-            SystemOption.objects.update_or_create(
+    def _seed_options(self):
+        for option_type, value, label, sort_order in OPTION_ROWS:
+            # Options are shared configuration, so never overwrite an administrator's
+            # existing value and never remove them during --reset.
+            SystemOption.objects.get_or_create(
                 type=option_type,
                 value=value,
                 defaults={"label": label, "sort_order": sort_order},
             )
 
-        demo_items = [
-            {
-                "owner_phone": "13800000000",
-                "title": "成都麻辣兔头",
-                "description": "地道成都风味，麻辣鲜香。",
-                "eat_method": "加热后食用。",
-                "images": ["https://images.unsplash.com/photo-1544025162-d76694265947?w=800"],
-                "category": "Snack",
-                "season": "AllYear",
-                "shelf_life": "Short_Days",
-                "portability": "Packaged",
-                "province": "Sichuan",
-                "city": "Chengdu",
-                "region_code": "510100",
-                "tags": ["麻辣", "下酒"],
-            },
-            {
-                "owner_phone": "13800000001",
-                "title": "成都冰粉",
-                "description": "夏季解暑甜品。",
-                "eat_method": "冷藏后口感更佳。",
-                "images": ["https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=800"],
-                "category": "Snack",
-                "season": "Summer",
-                "shelf_life": "Instant",
-                "portability": "EatOnSpot",
-                "province": "Sichuan",
-                "city": "Chengdu",
-                "region_code": "510100",
-                "tags": ["清爽", "甜"],
-            },
-            {
-                "owner_phone": "13800000002",
-                "title": "广州荔枝干",
-                "description": "岭南风味果干，适合交换邮寄。",
-                "eat_method": "开袋即食。",
-                "images": ["https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?w=800"],
-                "category": "Fruit",
-                "season": "Summer",
-                "shelf_life": "Long_Months",
-                "portability": "Packaged",
-                "province": "Guangdong",
-                "city": "Guangzhou",
-                "region_code": "440100",
-                "tags": ["果香", "甜"],
-            },
-            {
-                "owner_phone": "13800000003",
-                "title": "上海葱油拌面",
-                "description": "鲜香浓郁，地方特色明显。",
-                "eat_method": "开水煮面后拌匀。",
-                "images": ["https://images.unsplash.com/photo-1559847844-5315695dadae?w=800"],
-                "category": "Dish",
-                "season": "Autumn",
-                "shelf_life": "Short_Days",
-                "portability": "Packaged",
-                "province": "Shanghai",
-                "city": "Shanghai",
-                "region_code": "310100",
-                "tags": ["咸香", "鲜"],
-            },
-        ]
-
-        items_by_title = {}
-        items_by_owner_phone = {}
-        for row in demo_items:
-            owner = users_by_phone[row["owner_phone"]]
-            item, _ = Item.objects.get_or_create(
+    def _seed_items(self, users):
+        rows = (
+            (1, "麻辣兔头", "Snack", "AllYear", "Short_Days", "Packaged"),
+            (1, "红糖糍粑", "Snack", "AllYear", "Short_Days", "Packaged"),
+            (2, "成都冰粉", "Snack", "Summer", "Instant", "EatOnSpot"),
+            (2, "花椒酥", "Snack", "Autumn", "Long_Months", "Packaged"),
+            (3, "荔枝干", "Fruit", "Summer", "Long_Months", "Packaged"),
+            (3, "广式凉茶", "Drink", "Summer", "Short_Days", "Handheld"),
+            (4, "葱油拌面", "Dish", "Autumn", "Short_Days", "Packaged"),
+            (4, "桂花糕", "Snack", "Spring", "Long_Months", "Packaged"),
+            (5, "驴打滚", "Snack", "Winter", "Short_Days", "Packaged"),
+            (5, "山楂卷", "Fruit", "Autumn", "Long_Months", "Handheld"),
+            (6, "肉夹馍", "Snack", "AllYear", "Instant", "Handheld"),
+            (6, "柿饼", "Fruit", "Winter", "Long_Months", "Packaged"),
+        )
+        items = {}
+        for item_number, (owner_number, name, category, season, shelf_life, portability) in enumerate(rows, start=1):
+            owner = users[owner_number]
+            title = f"{SEED_PREFIX}{owner_number:02d}.item.{item_number:02d} {name}"
+            item, _ = Item.objects.update_or_create(
                 user=owner,
-                title=row["title"],
+                title=title,
                 defaults={
-                    "description": row["description"],
-                    "eat_method": row["eat_method"],
-                    "images": row["images"],
-                    "category": row["category"],
-                    "season": row["season"],
-                    "shelf_life": row["shelf_life"],
-                    "portability": row["portability"],
-                    "province": row["province"],
-                    "city": row["city"],
-                    "region_code": row["region_code"],
+                    "description": f"{SEED_PREFIX} 可用于演示浏览和交换的{name}。",
+                    "eat_method": "按包装说明食用。",
+                    "images": [f"https://images.unsplash.com/photo-1544025162-d76694265947?w=80{item_number}"],
+                    "category": category,
+                    "season": season,
+                    "shelf_life": shelf_life,
+                    "portability": portability,
+                    "province": owner.province,
+                    "city": owner.city,
+                    "region_code": owner.region_code,
+                    "is_visible": True,
+                    "audit_status": ItemAuditStatus.APPROVED,
+                    "audit_reason": "",
                 },
             )
-            changed = False
-            for field in (
-                "description",
-                "eat_method",
-                "images",
-                "category",
-                "season",
-                "shelf_life",
-                "portability",
-                "province",
-                "city",
-                "region_code",
-            ):
-                value = row[field]
-                if getattr(item, field) != value:
-                    setattr(item, field, value)
-                    changed = True
-            if changed:
-                item.save()
-            items_by_title[row["title"]] = item
-            items_by_owner_phone[row["owner_phone"]] = item
-
-            for tag_name in row["tags"]:
-                tag, _ = FlavorTag.objects.get_or_create(
-                    item=item, tag_name=tag_name, defaults={"vote_count": 1}
-                )
-                if tag.vote_count < 1:
-                    tag.vote_count = 1
-                    tag.save(update_fields=["vote_count"])
-
-        # Seed comments in same region (with one nested reply).
-        chengdu_item = items_by_title["成都麻辣兔头"]
-        bob = users_by_phone["13800000001"]
-        root_comment, _ = Comment.objects.get_or_create(
-            user=bob,
-            item=chengdu_item,
-            content="这个兔头很地道，辣度很够。",
-            defaults={"user_region_snapshot": bob.region_code or "", "depth": 0},
-        )
-        if root_comment.root_id is not None:
-            root_comment.root_id = None
-            root_comment.depth = 0
-            root_comment.save(update_fields=["root", "depth"])
-
-        alice = users_by_phone["13800000000"]
-        reply_exists = Comment.objects.filter(
-            item=chengdu_item,
-            user=alice,
-            parent_id=root_comment.id,
-            content="收到，欢迎交换试试。",
-        ).exists()
-        if not reply_exists:
-            Comment.objects.create(
-                user=alice,
-                item=chengdu_item,
-                content="收到，欢迎交换试试。",
-                user_region_snapshot=alice.region_code or "",
-                parent=root_comment,
-                root=root_comment,
-                depth=1,
+            FlavorTag.objects.update_or_create(
+                item=item,
+                tag_name=f"{SEED_PREFIX}tag.{item_number:02d}",
+                defaults={"vote_count": 1},
             )
+            items[item_number] = item
+        return items
 
-        # Seed chat conversation/messages.
-        carol = users_by_phone["13800000002"]
-        low, high = (alice, carol) if alice.id < carol.id else (carol, alice)
-        conversation, _ = Conversation.objects.get_or_create(
+    def _seed_exchanges(self, users, items):
+        rows = (
+            (ExchangeStatus.PENDING, 1, 3, 5, 1),
+            (ExchangeStatus.ACCEPTED, 2, 4, 7, 3),
+            (ExchangeStatus.REJECTED, 3, 5, 9, 5),
+            (ExchangeStatus.CANCELLED, 4, 6, 11, 7),
+            (ExchangeStatus.COMPLETED, 1, 3, 6, 2),
+            (ExchangeStatus.COMPLETED, 2, 4, 8, 4),
+            (ExchangeStatus.COMPLETED, 5, 6, 12, 9),
+        )
+        exchanges = {}
+        for number, (status, requester, owner, requested_item, offered_item) in enumerate(rows, start=1):
+            marker = f"{SEED_PREFIX}exchange.{number:02d}"
+            exchange, _ = ExchangeRequest.objects.update_or_create(
+                message=marker,
+                defaults={
+                    "requester": users[requester],
+                    "owner": users[owner],
+                    "requested_item": items[requested_item],
+                    "offered_item": items[offered_item],
+                    "status": status,
+                },
+            )
+            exchanges[number] = exchange
+        return exchanges
+
+    def _seed_conversation(self, users, items):
+        low, high = users[1], users[2]
+        conversation, _ = Conversation.objects.update_or_create(
             participant_low=low,
             participant_high=high,
-            context_key=Conversation.CONTEXT_GLOBAL,
-            defaults={"item": items_by_title["广州荔枝干"]},
+            context_key="seed.e2e.conversation.01",
+            defaults={"item": items[1]},
         )
-        ConversationMember.objects.get_or_create(conversation=conversation, user=alice)
-        ConversationMember.objects.get_or_create(conversation=conversation, user=carol)
-
-        if not ChatMessage.objects.filter(sender=alice, client_msg_id="seed-msg-1").exists():
-            ChatMessage.objects.create(
-                conversation=conversation,
-                sender=alice,
-                item=items_by_title["广州荔枝干"],
-                seq=1,
-                msg_type=ChatMessage.MSG_TYPE_TEXT,
-                content="你好，荔枝干可以交换吗？",
-                client_msg_id="seed-msg-1",
-            )
-        if not ChatMessage.objects.filter(sender=carol, client_msg_id="seed-msg-2").exists():
-            next_seq = (
-                ChatMessage.objects.filter(conversation=conversation)
-                .order_by("-seq")
-                .values_list("seq", flat=True)
-                .first()
-                or 0
-            ) + 1
-            ChatMessage.objects.create(
-                conversation=conversation,
-                sender=carol,
-                item=items_by_title["成都麻辣兔头"],
-                seq=next_seq,
-                msg_type=ChatMessage.MSG_TYPE_TEXT,
-                content="可以，想换成都兔头。",
-                client_msg_id="seed-msg-2",
-            )
-
-        latest = (
-            ChatMessage.objects.filter(conversation=conversation)
-            .order_by("-seq")
-            .first()
+        ConversationMember.objects.update_or_create(
+            conversation=conversation,
+            user=low,
+            defaults={"last_read_seq": 3, "unread_count": 0},
         )
-        if latest:
-            conversation.last_seq = latest.seq
-            conversation.last_message_type = latest.msg_type
-            conversation.last_message_preview = latest.content[:80]
-            conversation.last_message_at = latest.created_at
-            conversation.save(
-                update_fields=[
-                    "last_seq",
-                    "last_message_type",
-                    "last_message_preview",
-                    "last_message_at",
-                    "updated_at",
-                ]
-            )
-            ConversationMember.objects.filter(conversation=conversation, user=alice).update(
-                last_read_seq=conversation.last_seq,
-                unread_count=0,
-            )
-            ConversationMember.objects.filter(conversation=conversation, user=carol).update(
-                last_read_seq=conversation.last_seq,
-                unread_count=0,
-            )
-
-        # Seed exchange requests.
-        existing_pending_exchange = (
-            ExchangeRequest.objects.filter(
-                requester=alice,
-                owner=carol,
-                requested_item=items_by_title["广州荔枝干"],
-                offered_item=items_by_title["成都麻辣兔头"],
-                status=ExchangeStatus.PENDING,
-            )
-            .order_by("-id")
-            .first()
+        ConversationMember.objects.update_or_create(
+            conversation=conversation,
+            user=high,
+            defaults={"last_read_seq": 2, "unread_count": 1},
         )
-        if not existing_pending_exchange:
-            ExchangeRequest.objects.create(
-                requester=alice,
-                owner=carol,
-                requested_item=items_by_title["广州荔枝干"],
-                offered_item=items_by_title["成都麻辣兔头"],
-                message="我用兔头换荔枝干",
-                status=ExchangeStatus.PENDING,
+        messages = ((low, items[1], "想交换这份特产吗？"), (high, items[3], "可以，我很感兴趣。"), (low, items[2], "太好了，等你确认。"))
+        for seq, (sender, item, content) in enumerate(messages, start=1):
+            ChatMessage.objects.update_or_create(
+                sender=sender,
+                client_msg_id=f"seed.e2e.chat.01.{seq}",
+                defaults={
+                    "conversation": conversation,
+                    "item": item,
+                    "seq": seq,
+                    "msg_type": ChatMessage.MSG_TYPE_TEXT,
+                    "content": f"{SEED_PREFIX}{content}",
+                },
             )
+        latest = conversation.messages.order_by("-seq").first()
+        conversation.last_seq = latest.seq
+        conversation.last_message_type = latest.msg_type
+        conversation.last_message_preview = latest.content[:255]
+        conversation.last_message_at = latest.created_at
+        conversation.save(update_fields=["last_seq", "last_message_type", "last_message_preview", "last_message_at", "updated_at"])
 
-        existing_accepted_exchange = (
-            ExchangeRequest.objects.filter(
-                requester=users_by_phone["13800000001"],
-                owner=users_by_phone["13800000003"],
-                requested_item=items_by_title["上海葱油拌面"],
-                offered_item=items_by_title["成都冰粉"],
-                status=ExchangeStatus.ACCEPTED,
+    def _seed_community(self, users, items, exchanges):
+        rows = ((1, 3, 5, "荔枝干很适合分享。"), (2, 4, 6, "葱油拌面香气十足。"), (5, 6, 7, "肉夹馍值得回购。"))
+        posts = {}
+        for number, (user_number, item_number, exchange_number, content) in enumerate(rows, start=1):
+            marker = f"{SEED_PREFIX}post.{number:02d}"
+            post, _ = CommunityPost.objects.update_or_create(
+                user=users[user_number],
+                content=marker,
+                defaults={
+                    "item": items[item_number],
+                    "exchange": exchanges[exchange_number],
+                    "images": ["https://images.unsplash.com/photo-1519996529931-28324d5a630e?w=900"],
+                    "is_visible": True,
+                    "audit_status": CommunityAuditStatus.APPROVED,
+                    "audit_reason": "",
+                },
             )
-            .order_by("-id")
-            .first()
+            posts[number] = post
+        CommunityPostLike.objects.get_or_create(post=posts[1], user=users[2])
+        CommunityPostLike.objects.get_or_create(post=posts[1], user=users[3])
+        CommunityPostLike.objects.get_or_create(post=posts[2], user=users[1])
+
+        root, _ = CommunityComment.objects.update_or_create(
+            post=posts[1], user=users[2], content=f"{SEED_PREFIX}comment.01",
+            defaults={"parent": None, "root": None, "depth": 0, "is_visible": True, "audit_status": CommunityAuditStatus.APPROVED, "audit_reason": ""},
         )
-        if not existing_accepted_exchange:
-            ExchangeRequest.objects.create(
-                requester=users_by_phone["13800000001"],
-                owner=users_by_phone["13800000003"],
-                requested_item=items_by_title["上海葱油拌面"],
-                offered_item=items_by_title["成都冰粉"],
-                message="想交换尝尝",
-                status=ExchangeStatus.ACCEPTED,
+        reply, _ = CommunityComment.objects.update_or_create(
+            post=posts[1], user=users[1], content=f"{SEED_PREFIX}comment.02",
+            defaults={"parent": root, "root": root, "depth": 1, "is_visible": True, "audit_status": CommunityAuditStatus.APPROVED, "audit_reason": ""},
+        )
+        CommunityComment.objects.update_or_create(
+            post=posts[2], user=users[4], content=f"{SEED_PREFIX}comment.03",
+            defaults={"parent": None, "root": None, "depth": 0, "is_visible": True, "audit_status": CommunityAuditStatus.APPROVED, "audit_reason": ""},
+        )
+
+    def _reset_seed_data(self):
+        users = LocalUser.objects.filter(openid__in=SEED_OPENIDS)
+        items = Item.objects.filter(user__in=users, title__startswith=SEED_PREFIX)
+        marker_exchanges = ExchangeRequest.objects.filter(
+            message__startswith=f"{SEED_PREFIX}exchange."
+        )
+        exchanges = marker_exchanges.filter(
+            requester__in=users,
+            owner__in=users,
+            requested_item__in=items,
+            offered_item__in=items,
+        )
+        marker_posts = CommunityPost.objects.filter(
+            content__startswith=f"{SEED_PREFIX}post."
+        )
+        posts = marker_posts.filter(user__in=users, item__in=items, exchange__in=exchanges)
+        marker_conversations = Conversation.objects.filter(
+            context_key__startswith="seed.e2e.conversation."
+        )
+        conversations = marker_conversations.filter(
+            participant_low__in=users,
+            participant_high__in=users,
+            item__in=items,
+        )
+        marker_messages = ChatMessage.objects.filter(
+            client_msg_id__startswith="seed.e2e.chat."
+        )
+        chat_messages = marker_messages.filter(
+            sender__in=users,
+            conversation__in=conversations,
+            item__in=items,
+        )
+        marker_comments = CommunityComment.objects.filter(
+            content__startswith=f"{SEED_PREFIX}comment."
+        )
+        comments = marker_comments.filter(post__in=posts, user__in=users)
+        marker_tags = FlavorTag.objects.filter(tag_name__startswith=f"{SEED_PREFIX}tag.")
+        tags = marker_tags.filter(item__in=items)
+        likes = CommunityPostLike.objects.filter(post__in=posts, user__in=users)
+
+        self._assert_reset_is_scoped(
+            users,
+            items,
+            exchanges,
+            marker_exchanges,
+            posts,
+            marker_posts,
+            conversations,
+            marker_conversations,
+            chat_messages,
+            marker_messages,
+            comments,
+            marker_comments,
+            tags,
+            marker_tags,
+            likes,
+        )
+
+        likes.delete()
+        comments.delete()
+        posts.delete()
+        chat_messages.delete()
+        ConversationMember.objects.filter(conversation__in=conversations, user__in=users).delete()
+        conversations.delete()
+        exchanges.delete()
+        items.delete()
+        users.delete()
+
+    def _assert_reset_is_scoped(
+        self,
+        users,
+        items,
+        exchanges,
+        marker_exchanges,
+        posts,
+        marker_posts,
+        conversations,
+        marker_conversations,
+        chat_messages,
+        marker_messages,
+        comments,
+        marker_comments,
+        tags,
+        marker_tags,
+        likes,
+    ):
+        """Fail closed if deleting seed rows would cascade into outside data."""
+        has_unmarked_seed_item = Item.objects.filter(user__in=users).exclude(pk__in=items).exists()
+        has_marker_item_collision = Item.objects.filter(title__startswith=SEED_PREFIX).exclude(pk__in=items).exists()
+        has_outside_exchange = ExchangeRequest.objects.filter(
+            Q(requester__in=users)
+            | Q(owner__in=users)
+            | Q(requested_item__in=items)
+            | Q(offered_item__in=items)
+        ).exclude(pk__in=exchanges).exists()
+        has_marker_exchange_collision = marker_exchanges.exclude(pk__in=exchanges).exists()
+        has_outside_post = CommunityPost.objects.filter(
+            Q(user__in=users) | Q(item__in=items)
+        ).exclude(pk__in=posts).exists()
+        has_marker_post_collision = marker_posts.exclude(pk__in=posts).exists()
+        has_outside_comment = CommunityComment.objects.filter(
+            Q(user__in=users) | Q(post__in=posts)
+        ).exclude(pk__in=comments).exists()
+        has_marker_comment_collision = marker_comments.exclude(pk__in=comments).exists()
+        has_outside_like = CommunityPostLike.objects.filter(
+            Q(user__in=users) | Q(post__in=posts)
+        ).exclude(pk__in=likes).exists()
+        has_outside_conversation = Conversation.objects.filter(
+            Q(participant_low__in=users) | Q(participant_high__in=users)
+        ).exclude(pk__in=conversations).exists()
+        has_marker_conversation_collision = marker_conversations.exclude(pk__in=conversations).exists()
+        has_outside_chat_message = ChatMessage.objects.filter(
+            Q(sender__in=users) | Q(conversation__in=conversations)
+        ).exclude(pk__in=chat_messages).exists()
+        has_marker_chat_message_collision = marker_messages.exclude(pk__in=chat_messages).exists()
+        has_outside_legacy_message = Message.objects.filter(
+            Q(sender__in=users) | Q(receiver__in=users)
+        ).exists()
+        has_outside_item_relation = (
+            Comment.objects.filter(item__in=items).exists()
+            or FlavorTag.objects.filter(item__in=items)
+            .exclude(pk__in=tags)
+            .exists()
+            or FlavorVote.objects.filter(Q(user__in=users) | Q(flavor_tag__in=tags)).exists()
+        )
+        has_marker_tag_collision = marker_tags.exclude(pk__in=tags).exists()
+        if any(
+            (
+                has_unmarked_seed_item,
+                has_marker_item_collision,
+                has_outside_exchange,
+                has_marker_exchange_collision,
+                has_outside_post,
+                has_marker_post_collision,
+                has_outside_comment,
+                has_marker_comment_collision,
+                has_outside_like,
+                has_outside_conversation,
+                has_marker_conversation_collision,
+                has_outside_chat_message,
+                has_marker_chat_message_collision,
+                has_outside_legacy_message,
+                has_outside_item_relation,
+                has_marker_tag_collision,
             )
-
-        completed_exchange_1 = (
-            ExchangeRequest.objects.filter(
-                requester=alice,
-                owner=carol,
-                requested_item=items_by_owner_phone["13800000002"],
-                offered_item=items_by_owner_phone["13800000000"],
-                status=ExchangeStatus.COMPLETED,
-            )
-            .order_by("-id")
-            .first()
-        )
-        if not completed_exchange_1:
-            completed_exchange_1 = ExchangeRequest.objects.create(
-                requester=alice,
-                owner=carol,
-                requested_item=items_by_owner_phone["13800000002"],
-                offered_item=items_by_owner_phone["13800000000"],
-                status=ExchangeStatus.COMPLETED,
-                message="seed completed exchange 1",
-            )
-
-        completed_exchange_2 = (
-            ExchangeRequest.objects.filter(
-                requester=users_by_phone["13800000001"],
-                owner=users_by_phone["13800000003"],
-                requested_item=items_by_owner_phone["13800000003"],
-                offered_item=items_by_owner_phone["13800000001"],
-                status=ExchangeStatus.COMPLETED,
-            )
-            .order_by("-id")
-            .first()
-        )
-        if not completed_exchange_2:
-            completed_exchange_2 = ExchangeRequest.objects.create(
-                requester=users_by_phone["13800000001"],
-                owner=users_by_phone["13800000003"],
-                requested_item=items_by_owner_phone["13800000003"],
-                offered_item=items_by_owner_phone["13800000001"],
-                status=ExchangeStatus.COMPLETED,
-                message="seed completed exchange 2",
-            )
-
-        alice_post, _ = CommunityPost.objects.get_or_create(
-            user=alice,
-            item=items_by_owner_phone["13800000002"],
-            exchange=completed_exchange_1,
-            content="Seed demo: received lychee snacks after exchange, sweet and easy to carry.",
-            defaults={
-                "images": [
-                    "https://images.unsplash.com/photo-1519996529931-28324d5a630e?w=900"
-                ]
-            },
-        )
-        if not alice_post.images:
-            alice_post.images = [
-                "https://images.unsplash.com/photo-1519996529931-28324d5a630e?w=900"
-            ]
-            alice_post.save(update_fields=["images"])
-
-        carol_post, _ = CommunityPost.objects.get_or_create(
-            user=carol,
-            item=items_by_owner_phone["13800000000"],
-            exchange=completed_exchange_1,
-            content="Seed demo: the spicy rabbit head has a strong flavor and works well as a late-night snack.",
-            defaults={
-                "images": [
-                    "https://images.unsplash.com/photo-1544025162-d76694265947?w=900"
-                ]
-            },
-        )
-        if not carol_post.images:
-            carol_post.images = [
-                "https://images.unsplash.com/photo-1544025162-d76694265947?w=900"
-            ]
-            carol_post.save(update_fields=["images"])
-
-        david = users_by_phone["13800000003"]
-        bob_post, _ = CommunityPost.objects.get_or_create(
-            user=bob,
-            item=items_by_owner_phone["13800000003"],
-            exchange=completed_exchange_2,
-            content="Seed demo: the scallion oil noodles were simple to cook and very fragrant.",
-            defaults={
-                "images": [
-                    "https://images.unsplash.com/photo-1559847844-5315695dadae?w=900"
-                ]
-            },
-        )
-        if not bob_post.images:
-            bob_post.images = [
-                "https://images.unsplash.com/photo-1559847844-5315695dadae?w=900"
-            ]
-            bob_post.save(update_fields=["images"])
-
-        CommunityPostLike.objects.get_or_create(post=alice_post, user=carol)
-        CommunityPostLike.objects.get_or_create(post=alice_post, user=bob)
-        CommunityPostLike.objects.get_or_create(post=carol_post, user=alice)
-        CommunityPostLike.objects.get_or_create(post=bob_post, user=david)
-
-        root_community_comment, _ = CommunityComment.objects.get_or_create(
-            post=alice_post,
-            user=carol,
-            parent=None,
-            content="Seed demo: did you chill it before eating?",
-            defaults={"root": None, "depth": 0},
-        )
-        if root_community_comment.root_id is not None or root_community_comment.depth != 0:
-            root_community_comment.root = None
-            root_community_comment.depth = 0
-            root_community_comment.save(update_fields=["root", "depth"])
-
-        first_reply, _ = CommunityComment.objects.get_or_create(
-            post=alice_post,
-            user=alice,
-            parent=root_community_comment,
-            content="Seed demo: yes, the fruit aroma gets stronger after chilling.",
-            defaults={"root": root_community_comment, "depth": 1},
-        )
-        if first_reply.root_id != root_community_comment.id or first_reply.depth != 1:
-            first_reply.root = root_community_comment
-            first_reply.depth = 1
-            first_reply.save(update_fields=["root", "depth"])
-
-        second_reply, _ = CommunityComment.objects.get_or_create(
-            post=alice_post,
-            user=carol,
-            parent=first_reply,
-            content="Seed demo: nice, I will try that next time.",
-            defaults={"root": root_community_comment, "depth": 2},
-        )
-        if second_reply.root_id != root_community_comment.id or second_reply.depth != 2:
-            second_reply.root = root_community_comment
-            second_reply.depth = 2
-            second_reply.save(update_fields=["root", "depth"])
-
-        self.stdout.write(self.style.SUCCESS("demo seed completed"))
-        self.stdout.write(self.style.SUCCESS("test accounts:"))
-        for row in demo_users:
-            self.stdout.write(
-                f"  phone={row['phone']} password={password} nickname={row['nickname']}"
+        ):
+            raise CommandError(
+                "reset refused: non-seed relation references seed.e2e data"
             )
