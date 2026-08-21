@@ -14,11 +14,14 @@ export LOCAL_FLAVOR_ENV_FILE="$ENV_FILE"
 export LOCAL_FLAVOR_SECRETS_FILE="$SECRETS_FILE"
 export LOCAL_FLAVOR_LEGACY_STATIC_DIR="$LEGACY_STATIC_DIR"
 export LOCAL_FLAVOR_API_PORT="$API_PORT"
-export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:10809}"
-export HTTPS_PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"
+if [[ -z "${HTTP_PROXY:-}" && -z "${HTTPS_PROXY:-}" ]] && \
+    timeout 1 bash -c '</dev/tcp/127.0.0.1/10809' 2>/dev/null; then
+    export HTTP_PROXY="http://127.0.0.1:10809"
+    export HTTPS_PROXY="$HTTP_PROXY"
+fi
 export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost,host.docker.internal,redis}"
-export http_proxy="$HTTP_PROXY"
-export https_proxy="$HTTPS_PROXY"
+export http_proxy="${HTTP_PROXY:-}"
+export https_proxy="${HTTPS_PROXY:-}"
 export no_proxy="$NO_PROXY"
 
 compose() {
