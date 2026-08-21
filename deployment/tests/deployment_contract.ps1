@@ -53,12 +53,16 @@ Require-Text 'deploy/release.sh' '-c http.proxy="$GIT_PROXY" fetch --depth=1 ori
 Require-Text 'deploy/release.sh' 'checkout --detach "$RELEASE_TAG"'
 Require-Text 'deploy/release.sh' 'docker pull'
 Require-Text 'deploy/release.sh' 'pg_dump'
+Require-Text 'deploy/release.sh' 'compose run --rm -T --no-deps api sh -ceu'
 Require-Text 'deploy/release.sh' 'verify_legacy_data'
 Require-Text 'deploy/release.sh' 'report_database_rows'
 Require-Text 'deploy/release.sh' 'migrate --noinput'
 Require-Text 'deploy/release.sh' 'collectstatic --noinput'
 if ((Get-Content -LiteralPath 'deploy/release.sh' -Raw) -match 'docker compose.*build|npm ci|build:h5|HTTP_PROXY|HTTPS_PROXY') {
     throw 'Release script must use its proxy only for Git and must not build application artifacts on the server'
+}
+if ((Get-Content -LiteralPath 'deploy/release.sh' -Raw) -match '\$BACKUP_DIR:/backups') {
+    throw 'Release script must not give the non-root application container write access to the host backup directory'
 }
 Require-Text 'deploy/nginx/local_flavor.conf.template' 'listen 8080'
 Require-Text 'deploy/nginx/local_flavor.conf.template' 'location /ws/'

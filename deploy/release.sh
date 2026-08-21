@@ -87,12 +87,13 @@ backup_database() {
     timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
     backup_file="local_flavor-${timestamp}.dump"
     install -d -m 0700 "$BACKUP_DIR"
-    compose run --rm --no-deps -v "$BACKUP_DIR:/backups" api sh -ceu '
+    compose run --rm -T --no-deps api sh -ceu '
         export PGPASSWORD="$DB_PASSWORD"
         pg_dump --format=custom --no-owner --no-privileges \
             --host="$DB_HOST" --port="$DB_PORT" --username="$DB_USER" --dbname="$DB_NAME" \
-            --file="/backups/'"$backup_file"'"
-    '
+            --file=-
+    ' > "$BACKUP_DIR/$backup_file"
+    chmod 0600 "$BACKUP_DIR/$backup_file"
     printf 'PostgreSQL backup created: %s/%s\n' "$BACKUP_DIR" "$backup_file"
 }
 
