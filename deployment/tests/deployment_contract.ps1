@@ -51,6 +51,8 @@ if ((Get-Content -LiteralPath 'docker-compose.prod.yml' -Raw) -match '(?m)^  pos
 }
 Require-Text 'deploy/release.sh' '-c http.proxy="$GIT_PROXY" fetch --depth=1 origin "$RELEASE_TAG"'
 Require-Text 'deploy/release.sh' 'checkout --detach "$RELEASE_TAG"'
+Require-Text 'deploy/release.sh' 'LOCAL_FLAVOR_PUBLIC_HOST'
+Require-Text 'deploy/release.sh' '--header "Host: $PUBLIC_HOST"'
 Require-Text 'deploy/release.sh' 'docker pull'
 Require-Text 'deploy/release.sh' 'pg_dump'
 Require-Text 'deploy/release.sh' 'compose run --rm -T --no-deps api sh -ceu'

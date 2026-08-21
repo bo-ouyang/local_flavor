@@ -131,6 +131,8 @@ require_command stat
 [[ -f "$ENV_FILE" ]] || { printf 'Production config file not found: %s\n' "$ENV_FILE" >&2; exit 1; }
 [[ -f "$SECRETS_FILE" ]] || { printf 'Production secrets file not found: %s\n' "$SECRETS_FILE" >&2; exit 1; }
 require_secret_file_permissions
+PUBLIC_HOST="$(sed -n 's/^LOCAL_FLAVOR_PUBLIC_HOST=//p' "$ENV_FILE" | tail -n 1)"
+[[ -n "$PUBLIC_HOST" ]] || { printf 'LOCAL_FLAVOR_PUBLIC_HOST is required in %s\n' "$ENV_FILE" >&2; exit 1; }
 
 # Source changes update only deployment manifests. The proxy is deliberately
 # scoped to this Git transfer; Docker pulls use the daemon's own networking.
@@ -158,7 +160,7 @@ compose run --rm --no-deps api python manage.py migrate --noinput
 compose run --rm --no-deps api python manage.py collectstatic --noinput
 compose up -d --no-build --pull never --remove-orphans --wait --wait-timeout "$HEALTH_WAIT_SECONDS"
 report_database_rows
-curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${API_PORT}/" >/dev/null
+curl --fail --silent --show-error --max-time 10 --header "Host: $PUBLIC_HOST" "http://127.0.0.1:${API_PORT}/" >/dev/null
 curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${FRONTEND_PORT}/health" >/dev/null
 
 printf 'Deployment complete: API %s and H5 frontend %s are running.\n' "$BACKEND_IMAGE" "$FRONTEND_IMAGE"
