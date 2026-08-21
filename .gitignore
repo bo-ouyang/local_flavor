@@ -26,6 +26,8 @@ frontend/uni-app/.hbuilderx/
 frontend/uni-app/project.private.config.json
 env.dev
 env.pro
+env.prod
+backend_django/env.prod.secrets
 *.swp
 *.swo
 .worktrees/

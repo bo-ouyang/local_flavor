@@ -1,0 +1,85 @@
+name: local_flavor
+
+x-app-environment: &app-environment
+  env_file:
+    - ${LOCAL_FLAVOR_ENV_FILE:-./backend_django/env.prod}
+    - ${LOCAL_FLAVOR_SECRETS_FILE:-./backend_django/env.prod.secrets}
+  environment:
+    DJANGO_ENV: pro
+    DJANGO_LOAD_ENV_FILE: "0"
+    # The existing PostgreSQL instance remains the source of truth. Docker
+    # resolves this hostname through the host-gateway entry below.
+    DB_HOST: host.docker.internal
+
+x-app-host-gateway: &app-host-gateway
+  extra_hosts:
+    - host.docker.internal:host-gateway
+
+services:
+  api:
+    <<: [*app-environment, *app-host-gateway]
+    build:
+      context: .
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: local_flavor-api:latest
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:${LOCAL_FLAVOR_API_PORT:-8001}:8000
+    volumes:
+      - /srv/local_flavor/static:/app/static
+      - local_flavor_django_static:/app/backend_django/django_static
+      - local_flavor_logs:/app/backend_django/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings'); import django; django.setup(); from django.db import connection; connection.ensure_connection(); from django.core.cache import cache; cache.set('healthcheck', 'ok', 5); assert cache.get('healthcheck') == 'ok'"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  celery:
+    <<: [*app-environment, *app-host-gateway]
+    image: local_flavor-api:latest
+    command: celery -A config worker --loglevel=INFO --concurrency=2 --hostname=celery@%h
+    restart: unless-stopped
+    volumes:
+      - /srv/local_flavor/static:/app/static
+      - local_flavor_logs:/app/backend_django/logs
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping --destination=celery@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - local_flavor_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+volumes:
+  local_flavor_django_static:
+  local_flavor_logs:
+  local_flavor_redis_data:
