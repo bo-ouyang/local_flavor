@@ -60,6 +60,21 @@ restore_site() {
     fi
 }
 
+reload_nginx() {
+    if systemctl is-active --quiet nginx; then
+        sudo systemctl reload nginx
+        return
+    fi
+
+    local nginx_master_pid
+    nginx_master_pid="$(ps -C nginx -o pid=,args= | awk '/nginx: master process/ {print $1; exit}')"
+    [[ -n "$nginx_master_pid" ]] || {
+        printf 'Nginx is inactive and no running master process was found.\n' >&2
+        exit 1
+    }
+    sudo kill -HUP "$nginx_master_pid"
+}
+
 sudo install -m 0644 "$temporary_site" "$NGINX_SITE"
 sudo ln -sfn "$NGINX_SITE" "$NGINX_ENABLED"
 if ! sudo nginx -t; then
@@ -67,5 +82,5 @@ if ! sudo nginx -t; then
     sudo nginx -t || true
     exit 1
 fi
-sudo systemctl reload nginx
+reload_nginx
 printf 'Nginx site installed: http://SERVER_IP:8080/\n'
