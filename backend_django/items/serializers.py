@@ -139,6 +139,11 @@ class ItemListQuerySerializer(serializers.Serializer):
         return value.strip()
 
 
+class ItemFavoriteListQuerySerializer(serializers.Serializer):
+    skip = serializers.IntegerField(min_value=0, required=False, default=0)
+    limit = serializers.IntegerField(min_value=1, max_value=50, required=False, default=20)
+
+
 class ItemTodayByRegionQuerySerializer(serializers.Serializer):
     region_limit = serializers.IntegerField(min_value=1, max_value=100, required=False, default=8)
     item_limit = serializers.IntegerField(min_value=1, max_value=20, required=False, default=3)

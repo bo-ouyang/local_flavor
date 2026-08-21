@@ -11,7 +11,7 @@
       <view class="hero-actions">
         <view class="icon-btn" @click="goBack">‹</view>
         <view class="right-actions">
-          <view class="icon-btn" :class="{ fav: isFavorite }" @click="toggleFavorite">♥</view>
+          <view class="icon-btn" :class="{ fav: favoriteControl.isFavorite.value, disabled: !favoriteControl.canUpdate.value }" @click="toggleFavorite">♥</view>
         </view>
       </view>
     </view>
@@ -99,6 +99,8 @@ import { onLoad, onShow } from '@dcloudio/uni-app'
 import request from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import { ensureAuthed } from '@/utils/auth'
+import { createFavoriteControl } from '@/utils/favorite-control'
+import { fetchFavoriteState, setFavorite } from '@/utils/favorites'
 
 const userStore = useUserStore()
 const item = ref<any>(null)
@@ -106,7 +108,10 @@ const commentsTree = ref<any[]>([])
 const commentText = ref('')
 const replyTo = ref<any>(null)
 const myItems = ref<any[]>([])
-const isFavorite = ref(false)
+const favoriteControl = createFavoriteControl({
+  fetchState: fetchFavoriteState,
+  setFavorite
+})
 
 const defaultAvatar = 'https://dummyimage.com/200x200/e2e8f0/94a3b8&text=User'
 
@@ -155,30 +160,26 @@ const goBack = () => {
   uni.switchTab({ url: '/pages/index/index' })
 }
 
-const updateFavoriteState = (itemId: number | string) => {
-  const favorites = uni.getStorageSync('userFavorites') || []
-  if (!Array.isArray(favorites)) {
-    isFavorite.value = false
+const updateFavoriteState = async (itemId: number) => {
+  if (!userStore.token) {
+    favoriteControl.reset()
     return
   }
-  isFavorite.value = favorites.includes(String(itemId)) || favorites.includes(itemId)
+  const loaded = await favoriteControl.load(itemId)
+  if (!loaded) console.error('load favorite state failed')
 }
 
-const toggleFavorite = () => {
+const toggleFavorite = async () => {
   if (!item.value?.id) return
-  const key = String(item.value.id)
-  const favorites = uni.getStorageSync('userFavorites') || []
-  const next = Array.isArray(favorites) ? [...favorites] : []
-  const idx = next.findIndex((x: any) => String(x) === key)
-  if (idx >= 0) {
-    next.splice(idx, 1)
-    uni.showToast({ title: '已取消收藏', icon: 'none' })
-  } else {
-    next.push(key)
-    uni.showToast({ title: '已收藏', icon: 'none' })
+  if (!ensureAuthed({ toast: '请先登录后收藏' })) return
+  if (!favoriteControl.canUpdate.value) return
+  try {
+    const result = await favoriteControl.set(item.value.id, !favoriteControl.isFavorite.value)
+    if (!result) return
+    uni.showToast({ title: result.is_favorite ? '已收藏' : '已取消收藏', icon: 'none' })
+  } catch (e) {
+    console.error('toggle favorite failed', e)
   }
-  uni.setStorageSync('userFavorites', next)
-  updateFavoriteState(key)
 }
 
 const loadOptions = async () => {
@@ -198,7 +199,7 @@ const loadOptions = async () => {
 const loadDetail = async (id: string) => {
   const res: any = await request.get(`/items/${id}`)
   item.value = res
-  updateFavoriteState(res?.id)
+  if (res?.id) await updateFavoriteState(res.id)
 }
 
 const loadComments = async (id: string) => {
@@ -391,6 +392,10 @@ onShow(async () => {
   justify-content: center;
   font-size: 36rpx;
   font-weight: 700;
+}
+
+.icon-btn.disabled {
+  opacity: 0.5;
 }
 
 .icon-btn.fav {

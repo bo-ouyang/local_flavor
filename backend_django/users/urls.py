@@ -9,6 +9,7 @@ from users.views import (
     SessionRefreshView,
     SessionRevokeOthersView,
     SessionRevokeView,
+    UserStatsView,
     WechatLoginView,
 )
 
@@ -17,6 +18,7 @@ urlpatterns = [
     path("wx-login", WechatLoginView.as_view()),
     path("phone-login", PhoneLoginView.as_view()),
     path("me", MeView.as_view()),
+    path("stats", UserStatsView.as_view()),
     path("region", RegionUpdateView.as_view()),
     path("session/refresh", SessionRefreshView.as_view()),
     path("session/logout", SessionLogoutView.as_view()),

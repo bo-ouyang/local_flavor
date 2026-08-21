@@ -51,3 +51,27 @@ class Item(models.Model):
             models.Index(fields=["region_code", "created_at"]),
             models.Index(fields=["is_visible", "audit_status", "created_at"]),
         ]
+
+
+class ItemFavorite(models.Model):
+    user = models.ForeignKey(
+        LocalUser,
+        on_delete=models.CASCADE,
+        related_name="item_favorites",
+    )
+    item = models.ForeignKey(
+        Item,
+        on_delete=models.CASCADE,
+        related_name="favorite_records",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "item_favorites"
+        constraints = [
+            models.UniqueConstraint(fields=["user", "item"], name="unique_item_favorite"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["item", "user"]),
+        ]

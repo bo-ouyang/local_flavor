@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.hashers import check_password
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -18,6 +19,8 @@ from core.responses import api_success
 from core.throttles import LoginRateThrottle
 from core.wechat import code2session
 from users.models import AuthSession, LocalUser, Region
+from exchange.models import ExchangeRequest, ExchangeStatus
+from items.models import Item, ItemFavorite
 from users.serializers import (
     AuthSessionReadSerializer,
     LocalUserReadSerializer,
@@ -165,6 +168,25 @@ class MeView(APIView):
     def get(self, request):
         user = get_current_user(request, required=True)
         return api_success(data=LocalUserReadSerializer(user).data)
+
+
+class UserStatsView(APIView):
+    def get(self, request):
+        user = get_current_user(request, required=True)
+        completed_exchange_count = ExchangeRequest.objects.filter(
+            status=ExchangeStatus.COMPLETED,
+        ).filter(Q(requester_id=user.id) | Q(owner_id=user.id)).count()
+        return api_success(
+            data={
+                "completed_exchange_count": completed_exchange_count,
+                "published_item_count": Item.objects.filter(user_id=user.id).count(),
+                "favorite_item_count": ItemFavorite.objects.filter(
+                    user_id=user.id,
+                    item__is_visible=True,
+                    item__audit_status="approved",
+                ).count(),
+            }
+        )
 
 
 class RegionUpdateView(APIView):

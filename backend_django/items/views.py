@@ -17,10 +17,11 @@ from core.cache_utils import (
 from core.responses import api_success
 from core.time_utils import get_current_season
 from interactions.models import FlavorTag, FlavorVote
-from items.models import Item, ItemAuditStatus
+from items.models import Item, ItemAuditStatus, ItemFavorite
 from items.serializers import (
     FlavorVotePayloadSerializer,
     ItemCreateSerializer,
+    ItemFavoriteListQuerySerializer,
     ItemListQuerySerializer,
     ItemReadSerializer,
     ItemTodayByRegionQuerySerializer,
@@ -341,6 +342,83 @@ class ItemDetailView(APIView):
         if cache_key:
             cache_set(cache_key, data, timeout=settings.CACHE_TTL_ITEM_DETAIL)
         return api_success(data=data)
+
+
+class ItemFavoriteListView(APIView):
+    def get(self, request):
+        user = get_current_user(request, required=True)
+        query_serializer = ItemFavoriteListQuerySerializer(data=request.query_params)
+        query_serializer.is_valid(raise_exception=True)
+        query = query_serializer.validated_data
+        skip = query["skip"]
+        limit = query["limit"]
+        favorites = (
+            Item.objects.filter(
+                favorite_records__user_id=user.id,
+                is_visible=True,
+                audit_status=ItemAuditStatus.APPROVED,
+            )
+            .select_related("user")
+            .prefetch_related("flavor_tags")
+            .order_by("-favorite_records__created_at")
+        )
+        page = list(favorites[skip : skip + limit + 1])
+        has_more = len(page) > limit
+        items = page[:limit]
+        return api_success(
+            data={
+                "items": ItemReadSerializer(items, many=True).data,
+                "next_skip": skip + limit if has_more else None,
+                "has_more": has_more,
+            }
+        )
+
+
+class ItemFavoriteView(APIView):
+    def _item(self, item_id: int):
+        item = _public_item_queryset().filter(id=item_id).first()
+        if not item:
+            raise NotFound("Item not found")
+        return item
+
+    def get(self, request, item_id: int):
+        user = get_current_user(request, required=True)
+        self._item(item_id)
+        is_favorite = ItemFavorite.objects.filter(
+            user_id=user.id,
+            item_id=item_id,
+        ).exists()
+        return api_success(data={"item_id": item_id, "is_favorite": is_favorite})
+
+    def post(self, request, item_id: int):
+        user = get_current_user(request, required=True)
+        item = self._item(item_id)
+        # Compatibility endpoint for older clients. New clients use PUT/DELETE
+        # so retrying a request cannot accidentally reverse the intended state.
+        with transaction.atomic():
+            user.__class__.objects.select_for_update().get(pk=user.id)
+            favorite, created = ItemFavorite.objects.get_or_create(
+                user_id=user.id,
+                item_id=item.id,
+            )
+            if created:
+                is_favorite = True
+            else:
+                favorite.delete()
+                is_favorite = False
+        return api_success(data={"item_id": item.id, "is_favorite": is_favorite})
+
+    def put(self, request, item_id: int):
+        user = get_current_user(request, required=True)
+        item = self._item(item_id)
+        ItemFavorite.objects.get_or_create(user_id=user.id, item_id=item.id)
+        return api_success(data={"item_id": item.id, "is_favorite": True})
+
+    def delete(self, request, item_id: int):
+        user = get_current_user(request, required=True)
+        item = self._item(item_id)
+        ItemFavorite.objects.filter(user_id=user.id, item_id=item.id).delete()
+        return api_success(data={"item_id": item.id, "is_favorite": False})
 
 
 class ItemFlavorVoteView(APIView):

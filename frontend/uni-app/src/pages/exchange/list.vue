@@ -228,10 +228,6 @@ const updateStatus = async (id: number, status: string) => {
   try {
     await request.authPut(`/exchange/requests/${id}/status`, { status })
     uni.showToast({ title: '状态已更新', icon: 'success' })
-    if (status === 'completed') {
-      const current = Number(uni.getStorageSync('exchange_success_count') || 0)
-      uni.setStorageSync('exchange_success_count', current + 1)
-    }
     loadData()
   } catch (e) {
     console.error('update exchange status failed', e)

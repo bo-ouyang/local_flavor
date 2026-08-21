@@ -5,12 +5,176 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from core.auth import issue_token
+from core.auth import create_auth_session, issue_token
 from exchange.models import ExchangeRequest, ExchangeStatus
-from items.models import Item, ItemAuditStatus
+from items.models import Item, ItemAuditStatus, ItemFavorite
 from items.recommendation import get_publisher_completed_counts
 from system_config.models import SystemOption
 from users.models import LocalUser, UserPreferenceSnapshot
+
+
+class FavoriteAndProfileStatsApiTests(TestCase):
+    def setUp(self):
+        self.user = LocalUser.objects.create(openid="favorite-user")
+        self.owner = LocalUser.objects.create(openid="favorite-owner")
+        self.item = Item.objects.create(
+            user=self.owner,
+            title="Favoriteable local snack",
+            images=["https://example.com/snack.jpg"],
+            category="Snack",
+            season="AllYear",
+            shelf_life="Short_Days",
+            portability="Packaged",
+            province="Sichuan",
+            city="Chengdu",
+            region_code="510100",
+            audit_status=ItemAuditStatus.APPROVED,
+        )
+        self.credentials = create_auth_session(self.user)
+
+    def _auth(self):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self.credentials.access_token}"}
+
+    def test_favorite_target_state_endpoints_are_idempotent(self):
+        first_add = self.client.put(
+            f"/django/api/v1/items/{self.item.id}/favorite",
+            content_type="application/json",
+            **self._auth(),
+        )
+
+        self.assertEqual(first_add.status_code, 200)
+        self.assertEqual(
+            first_add.json()["data"],
+            {"item_id": self.item.id, "is_favorite": True},
+        )
+        repeated_add = self.client.put(
+            f"/django/api/v1/items/{self.item.id}/favorite",
+            content_type="application/json",
+            **self._auth(),
+        )
+        self.assertEqual(repeated_add.status_code, 200)
+        self.assertTrue(repeated_add.json()["data"]["is_favorite"])
+        self.assertEqual(ItemFavorite.objects.filter(user=self.user, item=self.item).count(), 1)
+
+        first_remove = self.client.delete(
+            f"/django/api/v1/items/{self.item.id}/favorite", **self._auth()
+        )
+        self.assertEqual(first_remove.status_code, 200)
+        self.assertFalse(first_remove.json()["data"]["is_favorite"])
+        repeated_remove = self.client.delete(
+            f"/django/api/v1/items/{self.item.id}/favorite", **self._auth()
+        )
+        self.assertEqual(repeated_remove.status_code, 200)
+        self.assertFalse(repeated_remove.json()["data"]["is_favorite"])
+
+    def test_favorites_list_is_paginated_and_only_returns_public_items(self):
+        second_public_item = Item.objects.create(
+            user=self.owner,
+            title="Second public favorite",
+            images=[],
+            category="Snack",
+            season="AllYear",
+            shelf_life="Short_Days",
+            portability="Packaged",
+            province="Sichuan",
+            city="Chengdu",
+            region_code="510100",
+            audit_status=ItemAuditStatus.APPROVED,
+        )
+        pending_item = Item.objects.create(
+            user=self.owner,
+            title="Pending favorite",
+            images=[],
+            category="Snack",
+            season="AllYear",
+            shelf_life="Short_Days",
+            portability="Packaged",
+            province="Sichuan",
+            city="Chengdu",
+            region_code="510100",
+            audit_status=ItemAuditStatus.PENDING,
+        )
+        ItemFavorite.objects.create(user=self.user, item=self.item)
+        ItemFavorite.objects.create(user=self.user, item=second_public_item)
+        ItemFavorite.objects.create(user=self.user, item=pending_item)
+
+        favorites = self.client.get(
+            "/django/api/v1/items/favorites",
+            {"skip": 0, "limit": 1},
+            **self._auth(),
+        )
+        self.assertEqual(favorites.status_code, 200)
+        self.assertEqual(len(favorites.json()["data"]["items"]), 1)
+        self.assertTrue(favorites.json()["data"]["has_more"])
+        self.assertEqual(favorites.json()["data"]["next_skip"], 1)
+
+        next_page = self.client.get(
+            "/django/api/v1/items/favorites",
+            {"skip": 1, "limit": 1},
+            **self._auth(),
+        )
+        self.assertEqual(next_page.status_code, 200)
+        self.assertEqual(len(next_page.json()["data"]["items"]), 1)
+        self.assertFalse(next_page.json()["data"]["has_more"])
+        returned_ids = {
+            row["id"] for row in favorites.json()["data"]["items"]
+        } | {row["id"] for row in next_page.json()["data"]["items"]}
+        self.assertEqual(returned_ids, {self.item.id, second_public_item.id})
+
+    def test_current_user_stats_are_derived_from_persisted_records(self):
+        own_item = Item.objects.create(
+            user=self.user,
+            title="My published snack",
+            images=["https://example.com/my-snack.jpg"],
+            category="Snack",
+            season="AllYear",
+            shelf_life="Short_Days",
+            portability="Packaged",
+            province="Guangdong",
+            city="Guangzhou",
+            region_code="440100",
+            audit_status=ItemAuditStatus.PENDING,
+        )
+        ExchangeRequest.objects.create(
+            requester=self.user,
+            owner=self.owner,
+            requested_item=self.item,
+            status=ExchangeStatus.COMPLETED,
+        )
+        ExchangeRequest.objects.create(
+            requester=self.owner,
+            owner=self.user,
+            requested_item=own_item,
+            status=ExchangeStatus.ACCEPTED,
+        )
+        hidden_item = Item.objects.create(
+            user=self.owner,
+            title="Hidden favorite",
+            images=[],
+            category="Snack",
+            season="AllYear",
+            shelf_life="Short_Days",
+            portability="Packaged",
+            province="Sichuan",
+            city="Chengdu",
+            region_code="510100",
+            audit_status=ItemAuditStatus.APPROVED,
+            is_visible=False,
+        )
+        ItemFavorite.objects.create(user=self.user, item=self.item)
+        ItemFavorite.objects.create(user=self.user, item=hidden_item)
+
+        response = self.client.get("/django/api/v1/user/stats", **self._auth())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["data"],
+            {
+                "completed_exchange_count": 1,
+                "published_item_count": 1,
+                "favorite_item_count": 1,
+            },
+        )
 
 
 class ItemListCreateViewTests(TestCase):

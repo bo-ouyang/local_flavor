@@ -12,15 +12,15 @@
 
         <view class="stats-grid">
           <view class="stat-item">
-            <text class="stat-num">{{ exchangedCount }}</text>
+            <text class="stat-num">{{ profileStats.completed_exchange_count }}</text>
             <text class="stat-label">成功交换</text>
           </view>
           <view class="stat-item">
-            <text class="stat-num">{{ myItems.length }}</text>
+            <text class="stat-num">{{ profileStats.published_item_count }}</text>
             <text class="stat-label">我的发布</text>
           </view>
           <view class="stat-item">
-            <text class="stat-num">{{ favoriteItems.length }}</text>
+            <text class="stat-num">{{ profileStats.favorite_item_count }}</text>
             <text class="stat-label">我的收藏</text>
           </view>
         </view>
@@ -56,6 +56,7 @@
               <text class="meta">{{ item.city || item.province || '未知地区' }}</text>
             </view>
           </view>
+          <button v-if="favoriteNextSkip !== null" class="load-more" :loading="favoritesLoading" @click="loadFavorites()">加载更多</button>
         </view>
         <view v-else class="empty">还没有收藏任何特产</view>
       </template>
@@ -86,16 +87,24 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onReachBottom, onShow } from '@dcloudio/uni-app'
 import { useUserStore } from '@/stores/user'
 import request from '@/utils/request'
 import { ensureAuthed, goLogin } from '@/utils/auth'
+import { fetchFavoriteItems, fetchProfileStats, type ProfileStats } from '@/utils/favorites'
 
 const userStore = useUserStore()
 const myItems = ref<any[]>([])
 const favoriteItems = ref<any[]>([])
+const favoriteNextSkip = ref<number | null>(0)
+const favoritesLoading = ref(false)
 const activeTab = ref<'listings' | 'favorites' | 'actions'>('listings')
 const locating = ref(false)
+const profileStats = ref<ProfileStats>({
+  completed_exchange_count: 0,
+  published_item_count: 0,
+  favorite_item_count: 0
+})
 
 const fallbackCover = 'https://dummyimage.com/400x300/f1f5f9/94a3b8&text=Local+Treasure'
 const defaultAvatar = 'https://dummyimage.com/200x200/e2e8f0/94a3b8&text=Avatar'
@@ -110,8 +119,6 @@ const displayRegion = computed(() => {
   return userStore.userInfo.region || `${userStore.userInfo.city || ''} ${userStore.userInfo.province || ''}`.trim() || '暂未设置地区'
 })
 const avatarUrl = computed(() => userStore.userInfo.avatar || defaultAvatar)
-const exchangedCount = computed(() => Number(uni.getStorageSync('exchange_success_count') || 0))
-
 const goToPublish = () => {
   if (!ensureAuthed({ toast: '请先登录后发布', redirect: '/pages/publish/publish' })) return
   uni.switchTab({ url: '/pages/publish/publish' })
@@ -172,18 +179,43 @@ const loadMyItems = async () => {
   }
 }
 
-const loadFavorites = async () => {
-  const ids = uni.getStorageSync('userFavorites') || []
-  if (!Array.isArray(ids) || !ids.length) {
+const loadFavorites = async (reset = false) => {
+  if (!isAuthed.value) {
     favoriteItems.value = []
+    favoriteNextSkip.value = null
+    return
+  }
+  if (favoritesLoading.value || (!reset && favoriteNextSkip.value === null)) return
+  const skip = reset ? 0 : favoriteNextSkip.value || 0
+  if (reset) {
+    favoriteItems.value = []
+    favoriteNextSkip.value = 0
+  }
+  favoritesLoading.value = true
+  try {
+    const page = await fetchFavoriteItems(skip)
+    favoriteItems.value = reset ? page.items : [...favoriteItems.value, ...page.items]
+    favoriteNextSkip.value = page.next_skip
+  } catch (e) {
+    console.error('load favorites failed', e)
+  } finally {
+    favoritesLoading.value = false
+  }
+}
+
+const loadProfileStats = async () => {
+  if (!isAuthed.value) {
+    profileStats.value = {
+      completed_exchange_count: 0,
+      published_item_count: 0,
+      favorite_item_count: 0
+    }
     return
   }
   try {
-    const res: any = await request.get('/items/', { limit: 100 })
-    const all = Array.isArray(res) ? res : []
-    favoriteItems.value = all.filter((it: any) => ids.includes(String(it.id)) || ids.includes(it.id))
+    profileStats.value = await fetchProfileStats()
   } catch (e) {
-    console.error('load favorites failed', e)
+    console.error('load profile stats failed', e)
   }
 }
 
@@ -195,7 +227,11 @@ onShow(async () => {
       console.error('fetch profile failed', e)
     }
   }
-  await Promise.all([loadMyItems(), loadFavorites()])
+  await Promise.all([loadMyItems(), loadFavorites(true), loadProfileStats()])
+})
+
+onReachBottom(() => {
+  if (activeTab.value === 'favorites') loadFavorites()
 })
 </script>
 
