@@ -163,7 +163,7 @@ onShow(async () => {
     await userStore.fetchUserInfo()
     navigateAfterLogin()
   } catch {
-    userStore.logout()
+    await userStore.logout()
   }
 })
 

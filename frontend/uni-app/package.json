@@ -40,7 +40,8 @@
     "build:quickapp-webview": "uni build -p quickapp-webview",
     "build:quickapp-webview-huawei": "uni build -p quickapp-webview-huawei",
     "build:quickapp-webview-union": "uni build -p quickapp-webview-union",
-    "type-check": "vue-tsc --noEmit"
+    "type-check": "vue-tsc --noEmit",
+    "test:unit": "vitest run"
   },
   "dependencies": {
     "@dcloudio/uni-app": "3.0.0-5010520260709002",
@@ -71,6 +72,7 @@
     "sass": "^1.69.5",
     "typescript": "5.4.5",
     "vite": "5.2.8",
+    "vitest": "1.6.0",
     "vue-tsc": "3.3.8"
   }
 }

@@ -1,40 +1,56 @@
 import { defineStore } from 'pinia'
 import request from '@/utils/request'
+import { authSession, clearAuthSession, setAuthSession, subscribeToAuthSession } from '@/utils/session'
 
-export const useUserStore = defineStore('user', {
+const defaultUserInfo = () => ({
+    id: 0,
+    nickname: 'Guest',
+    region: '',
+    region_code: '',
+    province: '',
+    city: '',
+    latitude: null as number | null,
+    longitude: null as number | null
+})
+
+const useUserStoreBase = defineStore('user', {
 	state: () => ({
-		userInfo: uni.getStorageSync('user_info') || {
-            id: 0,
-            nickname: 'Guest',
-            region: '',
-            region_code: '',
-            province: '',
-            city: '',
-            latitude: null as number | null,
-            longitude: null as number | null
-        },
-        token: uni.getStorageSync('auth_token') || ''
+		userInfo: uni.getStorageSync('user_info') || defaultUserInfo()
 	}),
+	getters: {
+        token: () => authSession.accessToken,
+        refreshToken: () => authSession.refreshToken,
+        sessionId: () => authSession.sessionId
+    },
 	actions: {
-        logout() {
-            this.token = ''
-            this.userInfo = {
-                id: 0,
-                nickname: 'Guest',
-                region: '',
-                region_code: '',
-                province: '',
-                city: '',
-                latitude: null,
-                longitude: null
-            }
-            uni.removeStorageSync('auth_token')
+        resetUserInfo() {
+            this.userInfo = defaultUserInfo()
             uni.removeStorageSync('user_info')
+        },
+        async logout() {
+            if (this.token) {
+                try {
+                    await request.post('/user/session/logout', undefined, {
+                        authMode: 'required',
+                        skipToast: true
+                    })
+                } catch (error) {
+                    console.warn('Server logout failed', error)
+                }
+            }
+            clearAuthSession()
+            this.resetUserInfo()
         },
 
         applyLoginResult(res: any) {
-            this.token = res.access_token
-            uni.setStorageSync('auth_token', this.token)
+            const session = res.session || res
+            setAuthSession({
+                access_token: session.access_token || res.access_token || '',
+                refresh_token: session.refresh_token || res.refresh_token || '',
+                session_id: session.session_id ?? res.session_id,
+                access_expires_at: session.access_expires_at,
+                refresh_expires_at: session.refresh_expires_at
+            })
             if (res.user) {
                 this.setUserInfo(res.user)
             }
@@ -109,3 +125,16 @@ export const useUserStore = defineStore('user', {
         }
 	}
 })
+
+const storesBoundToSession = new WeakSet<object>()
+
+export const useUserStore = () => {
+    const store = useUserStoreBase()
+    if (!storesBoundToSession.has(store)) {
+        storesBoundToSession.add(store)
+        subscribeToAuthSession((accessToken) => {
+            if (!accessToken) store.resetUserInfo()
+        })
+    }
+    return store
+}

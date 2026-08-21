@@ -154,8 +154,8 @@ const refreshLocation = async () => {
   }
 }
 
-const logout = () => {
-  userStore.logout()
+const logout = async () => {
+  await userStore.logout()
   uni.showToast({ title: '已退出登录', icon: 'none' })
 }
 

@@ -10,7 +10,7 @@
 			    await userStore.fetchUserInfo()
             } catch (e) {
                 console.error('init profile failed', e)
-                userStore.logout()
+                await userStore.logout()
             }
 		},
 		onShow: function() {

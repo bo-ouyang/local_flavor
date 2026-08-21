@@ -53,11 +53,13 @@ import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { useUserStore } from '@/stores/user'
 import request from '@/utils/request'
 import { goLogin } from '@/utils/auth'
+import { subscribeToAuthSession } from '@/utils/session'
+import { canUseChatWebSocket, createChatSocketLifecycle, subscribeChatSessionReconnect } from '@/utils/chat-transport'
 
 const userStore = useUserStore()
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
 const WS_BASE = API_BASE.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '')
-const WS_ENABLED = (import.meta as any).env?.VITE_CHAT_ENABLE_WS === '1'
+const WS_ENABLED = (import.meta as any).env?.VITE_CHAT_ENABLE_WS === '1' && canUseChatWebSocket()
 const isAuthed = computed(() => !!userStore.token)
 const conversationId = ref(0)
 const targetId = ref(0)
@@ -70,9 +72,9 @@ const sending = ref(false)
 const wsConnected = ref(false)
 const wsUnavailable = ref(false)
 const wsConnecting = ref(false)
-let socketTask: UniApp.SocketTask | null = null
 let pollingTimer: any = null
-let manualSocketClosing = false
+let pageActive = false
+let unsubscribeSession: (() => void) | null = null
 
 const sortBySeq = (list: any[]) => {
   return [...list].sort((a, b) => (a.seq || 0) - (b.seq || 0))
@@ -233,72 +235,50 @@ const handleSocketPayload = async (payload: any) => {
   }
 }
 
-const closeSocket = () => {
-  wsConnected.value = false
-  wsConnecting.value = false
-  if (socketTask) {
-    manualSocketClosing = true
-    try {
-      socketTask.close({})
-    } catch (e) {
-      console.error('close socket failed', e)
-    }
-    socketTask = null
-  }
-}
-
-const connectSocket = () => {
-  if (!WS_ENABLED) {
-    wsUnavailable.value = true
-    return
-  }
-  if (!conversationId.value || !userStore.token || socketTask || wsUnavailable.value || wsConnecting.value) {
-    return
-  }
-  wsConnecting.value = true
-  const url = `${WS_BASE}/ws/chat/conversations/${conversationId.value}/?token=${encodeURIComponent(userStore.token)}`
-  socketTask = uni.connectSocket({
-    url,
-    header: {
-      Authorization: `Bearer ${userStore.token}`
-    },
-    complete: () => {}
-  })
-
-  socketTask.onOpen(() => {
-    wsConnected.value = true
-    wsConnecting.value = false
-    wsUnavailable.value = false
-    manualSocketClosing = false
-  })
-
-  socketTask.onMessage((res) => {
+const socketLifecycle = createChatSocketLifecycle({
+  canConnect: () => WS_ENABLED && !!conversationId.value && !!userStore.token,
+  createSocket: () => {
+    const url = `${WS_BASE}/ws/chat/conversations/${conversationId.value}/`
+    return uni.connectSocket({
+      url,
+      header: { Authorization: `Bearer ${userStore.token}` },
+      complete: () => {}
+    })
+  },
+  setStatus: (status) => {
+    wsConnected.value = status.connected
+    wsConnecting.value = status.connecting
+    wsUnavailable.value = status.unavailable
+  },
+  onMessage: (res) => {
     try {
       const payload = JSON.parse((res?.data as string) || '{}')
       handleSocketPayload(payload)
     } catch (e) {
       console.error('invalid socket payload', e)
     }
-  })
+  },
+  onError: (err) => console.error('socket error', err)
+})
 
-  socketTask.onClose(() => {
-    wsConnected.value = false
-    wsConnecting.value = false
-    if (!manualSocketClosing && !wsUnavailable.value) {
-      wsUnavailable.value = true
-    }
-    manualSocketClosing = false
-    socketTask = null
-  })
+const closeSocket = () => socketLifecycle.close()
 
-  socketTask.onError((err) => {
-    console.error('socket error', err)
-    wsConnected.value = false
-    wsConnecting.value = false
+const connectSocket = () => {
+  if (!WS_ENABLED) {
     wsUnavailable.value = true
-    manualSocketClosing = false
-    socketTask = null
-  })
+    return
+  }
+  socketLifecycle.connect()
+}
+
+const subscribeSocketToSessionChanges = () => {
+  unsubscribeSession?.()
+  unsubscribeSession = subscribeChatSessionReconnect(
+    subscribeToAuthSession,
+    () => pageActive && !!conversationId.value && WS_ENABLED,
+    () => socketLifecycle.reconnect(),
+    () => socketLifecycle.close()
+  )
 }
 
 onLoad(async (options: any) => {
@@ -322,12 +302,15 @@ onLoad(async (options: any) => {
 
   if (conversationId.value) {
     await Promise.all([loadHistory(), loadMyItems()])
+    pageActive = true
+    subscribeSocketToSessionChanges()
     connectSocket()
     startPolling()
   }
 })
 
 onShow(async () => {
+  pageActive = true
   if (!isAuthed.value) return
   if (conversationId.value) {
     if (!wsConnected.value && !wsUnavailable.value) connectSocket()
@@ -336,10 +319,14 @@ onShow(async () => {
 })
 
 onHide(() => {
+  pageActive = false
   closeSocket()
 })
 
 onUnload(() => {
+  pageActive = false
+  unsubscribeSession?.()
+  unsubscribeSession = null
   closeSocket()
   stopPolling()
 })

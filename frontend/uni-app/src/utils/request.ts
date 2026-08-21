@@ -1,4 +1,5 @@
-import { goLogin } from '@/utils/auth'
+import { goLogin } from '@/utils/auth-navigation'
+import { authSession, clearAuthSession, refreshAuthSession } from '@/utils/session'
 
 const BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
 
@@ -15,16 +16,17 @@ type AuthMode = 'none' | 'required'
 type RequestExtOptions = UniApp.RequestOptions & {
   authMode?: AuthMode
   skipToast?: boolean
+  skipAuthRefresh?: boolean
 }
 
 const clearAuth = () => {
-  uni.removeStorageSync('auth_token')
+  clearAuthSession()
   uni.removeStorageSync('user_info')
 }
 
-const request = <T>(options: RequestExtOptions): Promise<T> => {
+const request = <T>(options: RequestExtOptions, hasRetried = false): Promise<T> => {
   const authMode = options.authMode || 'none'
-  const token = uni.getStorageSync('auth_token')
+  const token = authSession.accessToken
 
   if (authMode === 'required' && !token) {
     goLogin()
@@ -65,9 +67,23 @@ const request = <T>(options: RequestExtOptions): Promise<T> => {
         }
 
         const message = payload?.message || `HTTP ${res.statusCode}`
+        if (res.statusCode === 401 && authMode === 'required' && !options.skipAuthRefresh && !hasRetried) {
+          if (authSession.accessToken && authSession.accessToken !== token) {
+            request<T>(options, true).then(resolve, reject)
+            return
+          }
+          refreshAuthSession()
+            .then(() => request<T>(options, true).then(resolve, reject))
+            .catch(() => {
+              clearAuth()
+              goLogin()
+              reject({ code: 401, message, raw: res })
+            })
+          return
+        }
         if (res.statusCode === 401 || res.statusCode === 403) {
           clearAuth()
-          if (authMode === 'required') {
+          if (authMode === 'required' && !options.skipAuthRefresh) {
             goLogin()
           }
         }

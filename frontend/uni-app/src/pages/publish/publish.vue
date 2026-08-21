@@ -104,6 +104,7 @@ import { onShow } from '@dcloudio/uni-app'
 import request from '@/utils/request'
 import { useUserStore } from '@/stores/user'
 import { ensureAuthed } from '@/utils/auth'
+import { authUploadFile } from '@/utils/upload'
 
 const userStore = useUserStore()
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api/v1'
@@ -232,26 +233,9 @@ const uploadImages = async (paths: string[]) => {
   uni.showLoading({ title: '上传中...' })
   for (const path of paths) {
     try {
-      await new Promise((resolve, reject) => {
-        uni.uploadFile({
-          url: `${API_BASE}/upload/`,
-          filePath: path,
-          name: 'file',
-          header: {
-            Authorization: `Bearer ${userStore.token}`
-          },
-          success: (uploadRes) => {
-            const data = JSON.parse(uploadRes.data || '{}')
-            if (data?.code === 0 && data?.data?.url) {
-              form.images.push(`${API_ORIGIN}${data.data.url}`)
-              resolve(true)
-              return
-            }
-            reject(new Error('upload failed'))
-          },
-          fail: (err) => reject(err)
-        })
-      })
+      const data = await authUploadFile({ url: `${API_BASE}/upload/`, filePath: path, name: 'file' })
+      if (data?.code !== 0 || !data?.data?.url) throw new Error('upload failed')
+      form.images.push(`${API_ORIGIN}${data.data.url}`)
     } catch (e) {
       console.error('upload image failed', e)
       uni.showToast({ title: '图片上传失败', icon: 'none' })
