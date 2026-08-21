@@ -1,8 +1,23 @@
-# Docker Deployment
+# GHCR Image Deployment
 
-This Compose project runs the Django API, Celery worker, and Redis. It does
-not create PostgreSQL: the existing host database is used through Docker's
-`host-gateway`. Existing uploads stay mounted from `/srv/local_flavor/static`.
+The server never builds application images. GitHub Actions publishes an API
+image and an H5 image to GHCR for each `main` commit, then the server pulls the
+exact 40-character commit tag. Compose runs Django, Celery, H5 Nginx, and
+Redis. PostgreSQL remains on the host through Docker's `host-gateway`, and
+uploads remain mounted from `/srv/local_flavor/static`.
+
+## Package Visibility
+
+The repository being public does not automatically make a newly created GHCR
+package public. After the first successful `Publish GHCR Images` workflow,
+open each package's GitHub **Package settings** and set its visibility to
+**Public**:
+
+- `ghcr.io/bo-ouyang/local-flavor-api`
+- `ghcr.io/bo-ouyang/local-flavor-h5`
+
+After both packages are public, the server runs `docker pull` without a GitHub
+login or PAT. Until then, a registry login with a package-read token is needed.
 
 ## First Server Setup
 
@@ -14,25 +29,29 @@ not create PostgreSQL: the existing host database is used through Docker's
 3. Copy `backend_django/env.prod.secrets.example` to
    `backend_django/env.prod.secrets`. Put the existing PostgreSQL password and
    Django/WeChat secrets there, then run `chmod 600 backend_django/env.prod.secrets`.
-4. Run `bash deploy/deploy.sh`. Before migrations, it verifies the old media
-   directory, reports the exact database row count, and writes a custom-format
+4. Publish the commit on `main` with the `Publish GHCR Images` workflow. Copy
+   its full commit SHA from GitHub.
+5. Run `bash deploy/release.sh <40-character-commit-sha>`. Before migrations,
+   it verifies old media, reports database rows, and writes a custom-format
    PostgreSQL backup under `/srv/local_flavor/backups`.
-5. Run `bash deploy/install-nginx.sh` once. Nginx serves the H5 build at
-   `http://SERVER_IP:8080/`; the H5 build calls the API on that same HTTP
-   origin at `/django/api/v1`.
+6. Run `bash deploy/install-nginx.sh` once. Host Nginx proxies the H5 image at
+   `http://SERVER_IP:8080/` and proxies the API on that same origin.
 
-The deploy script defaults Git, npm, and image-build traffic to
-`http://127.0.0.1:10809`. Docker image pulls themselves require the Docker
-daemon proxy to be configured when direct registry access is unavailable.
+`LOCAL_FLAVOR_GIT_PROXY` defaults to `http://127.0.0.1:10809` and is passed
+only to `git pull`. Docker does not receive `HTTP_PROXY` or build arguments;
+when direct registry access is blocked, configure the Docker daemon proxy
+separately so `docker pull` can reach GHCR.
 
 ## Updates and Recovery
 
-Run `bash deploy/deploy.sh` from a clean checkout for each update. It builds
-the H5 output, refreshes the API image, makes a database backup before every
-migration, collects static files, then waits for API (database and Redis) and
-Celery worker health checks. The Nginx site keeps serving the H5 directory on
-subsequent deployments.
+For each update, publish the `main` commit and run:
 
-Database migrations are forward-only. To undo an incompatible release, restore
-the pre-deploy dump from `/srv/local_flavor/backups` before returning to the
-previous revision.
+```bash
+bash deploy/release.sh <40-character-commit-sha>
+```
+
+The script checks out the same exact commit, pulls immutable API and H5 images,
+backs up PostgreSQL before every migration, collects static files, and waits
+for API, Celery, Redis, and H5 health checks. On an application startup failure
+it restores the prior images. Database migrations are forward-only, so restore
+the pre-release dump before rolling back an incompatible schema migration.

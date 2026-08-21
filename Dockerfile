@@ -6,10 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-
 COPY requirements.lock requirements.txt ./
 RUN apt-get update \
     && apt-get install --no-install-recommends -y postgresql-client \

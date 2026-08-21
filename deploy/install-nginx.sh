@@ -4,8 +4,8 @@ set -Eeuo pipefail
 PROJECT_NAME="${LOCAL_FLAVOR_PROJECT_NAME:-local_flavor}"
 PROJECT_DIR="${LOCAL_FLAVOR_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 API_PORT="${LOCAL_FLAVOR_API_PORT:-8001}"
+FRONTEND_PORT="${LOCAL_FLAVOR_FRONTEND_PORT:-8002}"
 LEGACY_STATIC_DIR="${LOCAL_FLAVOR_LEGACY_STATIC_DIR:-/srv/local_flavor/static}"
-H5_DIR="${LOCAL_FLAVOR_H5_DIR:-$PROJECT_DIR/frontend/uni-app/dist/build/h5}"
 TEMPLATE="$PROJECT_DIR/deploy/nginx/local_flavor.conf.template"
 NGINX_SITE="${LOCAL_FLAVOR_NGINX_SITE:-/etc/nginx/sites-available/local_flavor}"
 NGINX_ENABLED="${LOCAL_FLAVOR_NGINX_ENABLED:-/etc/nginx/sites-enabled/local_flavor}"
@@ -27,8 +27,8 @@ volume_path() {
 }
 
 django_static_dir="$(volume_path "${PROJECT_NAME}_local_flavor_django_static")"
-[[ -d "$django_static_dir" && -d "$LEGACY_STATIC_DIR" && -f "$H5_DIR/index.html" ]] || {
-    printf 'Django static, legacy media, or H5 build output is missing. Run deploy/deploy.sh first.\n' >&2
+[[ -d "$django_static_dir" && -d "$LEGACY_STATIC_DIR" ]] || {
+    printf 'Django static or legacy media is missing. Run deploy/release.sh first.\n' >&2
     exit 1
 }
 
@@ -42,9 +42,9 @@ trap cleanup EXIT
 
 sed \
     -e "s|__LOCAL_FLAVOR_API_PORT__|$API_PORT|g" \
+    -e "s|__LOCAL_FLAVOR_FRONTEND_PORT__|$FRONTEND_PORT|g" \
     -e "s|__LOCAL_FLAVOR_DJANGO_STATIC_DIR__|$django_static_dir|g" \
     -e "s|__LOCAL_FLAVOR_MEDIA_DIR__|$LEGACY_STATIC_DIR|g" \
-    -e "s|__LOCAL_FLAVOR_H5_DIR__|$H5_DIR|g" \
     "$TEMPLATE" > "$temporary_site"
 
 if sudo test -e "$NGINX_SITE"; then

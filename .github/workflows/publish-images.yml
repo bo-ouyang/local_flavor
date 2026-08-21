@@ -1,0 +1,69 @@
+name: Publish GHCR Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish immutable API and H5 images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Derive lower-case image names
+        id: images
+        shell: bash
+        run: |
+          owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
+          echo "api=ghcr.io/$owner/local-flavor-api" >> "$GITHUB_OUTPUT"
+          echo "h5=ghcr.io/$owner/local-flavor-h5" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.images.outputs.api }}:${{ github.sha }}
+            ${{ steps.images.outputs.api }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Local Flavor Django API and Celery runtime
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and publish H5 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./frontend/uni-app/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.images.outputs.h5 }}:${{ github.sha }}
+            ${{ steps.images.outputs.h5 }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Local Flavor uni-app H5 frontend
+            org.opencontainers.image.revision=${{ github.sha }}
