@@ -20,6 +20,7 @@ services:
     <<: [*app-environment, *app-host-gateway]
     build:
       context: .
+      network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
